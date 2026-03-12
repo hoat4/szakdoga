@@ -1,13 +1,10 @@
-from scapy.all import *
+from rifo_test_common import *
 
 # update interval = 5, ezért elég 10 packet (6 is elég lenne)
 
 for i in range(0, 20):
     rank = 10000 if i % 2 == 0 else 1
-
-    print("Send with rank " + str(rank))
-    p = IP(dst="10.0.0.1", id = rank) / UDP(sport = 12345, dport=50005) / ("abc" * 30) 
-    send(p)
+    sendWithRank(rank, 90)
 
 print("Done")
 

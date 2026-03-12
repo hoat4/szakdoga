@@ -1,7 +1,6 @@
-from scapy.all import *
+from rifo_test_common import *
 import time
 
 for i in range(0, 10):
-    p = IP(dst="10.0.0.1", id = 1) / UDP(sport = 12345, dport=50005) / ("Hello world!" + str(i))
-    send(p)
+    sendWithRank(1, 30)
     time.sleep(1)
