@@ -1,6 +1,8 @@
 TARGET := vacak
-CFLAGS += -g -DDEBUG
+CFLAGS += -g -DDEBUG -DRIFO_QUEUE_LENGTH=10000 -DRIFO_UPDATE_INTERVAL=5
 CC += ${CFLAGS}
+
+# 2500000, 100
 
 obj-m += rifo.o sp_pifo.o pifo.o
 vacak:
@@ -34,7 +36,7 @@ rifo_teszt:
 	-rmmod rifo
 	insmod rifo.ko
 	tc qdisc add dev s1-eth1 root handle 1: htb default 1
-	tc class add dev s1-eth1 parent 1: classid 1:1 htb rate 10Mbit ceil 10Mbit
+	tc class add dev s1-eth1 parent 1: classid 1:1 htb rate 10Kbit ceil 10Kbit
 	tc qdisc add dev s1-eth1 parent 1:1 rifo
 
 sp_pifo_teszt:

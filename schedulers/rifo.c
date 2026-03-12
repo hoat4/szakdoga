@@ -53,10 +53,10 @@ static int rifo_init(struct Qdisc *sch, struct nlattr *arg,
 {
     struct rifo_sched_data *q = qdisc_priv(sch);
     memset(q, 0, sizeof(struct rifo_sched_data));
-    sch->limit = q->params.limit = 2500000;
+    sch->limit = q->params.limit = RIFO_QUEUE_LENGTH; // preprocessor variable, pl. Makefileból állítható
     q->sch = sch;
     q->params.guaranteed_admission_limit = q->params.limit / 10;
-    q->params.update_interval = 100;
+    q->params.update_interval = RIFO_UPDATE_INTERVAL;
     q->vars.min = UINT32_MAX;
 
     return 0;
@@ -106,7 +106,8 @@ static int rifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 enqueue:
     if (sch->qstats.backlog + qdisc_pkt_len(skb) <= q->params.limit) {
-		pr_debug("rank %d enqueue (used %d, limit %d)", rank, sch->qstats.backlog, q->params.limit);
+		pr_debug("rank %d enqueue (used %d, limit %d: current rank range: %d-%d)", rank, sch->qstats.backlog, q->params.limit, 
+            q->vars.min, q->vars.max);
         return qdisc_enqueue_tail(skb, sch);
     }
 
@@ -121,6 +122,21 @@ static struct sk_buff *rifo_dequeue(struct Qdisc *sch)
 {
 	//struct rifo_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb = qdisc_dequeue_head(sch);
+    if (skb) {
+    	if (skb_protocol(skb, true) != htons(ETH_P_IP))
+	    	pr_debug("Dequeue non-IP");
+        else {
+	        const struct iphdr *iph = ip_hdr(skb);
+	        if(iph == NULL)
+        		pr_debug("Dequeue non-IP");
+            else {
+                u32 rank = iph == NULL ? 0 : ntohs(iph->id);
+                pr_debug("Dequeue with rank %d", rank); 
+            }
+        }
+    } else {
+        pr_debug("No packet to be dequeued");
+    }
 	//const struct iphdr *iph;
 	return skb;
 }
