@@ -1,7 +1,6 @@
-from rifo_test_common import *
+from scheduler_test_common import *
 
-# TODO az elején kéne resetelni a schedulert, mert különben lehet, 
-#      hogy pont akkor resetlődik a counter, amikor a 2-es rangút küldenénk
+initScheduler("rifo", "10Kbit")
 
 # mivel az update interval a teszt során 5, ezért 18 packet bőven elég arra, hogy
 # törlődjön az előző tesztekből hátramaradt megmaradt min/max

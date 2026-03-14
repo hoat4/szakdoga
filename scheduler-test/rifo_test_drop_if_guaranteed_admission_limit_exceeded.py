@@ -1,4 +1,7 @@
-from rifo_test_common import *
+from scheduler_test_common import *
+
+initScheduler("rifo", "10Kbit")
+
 
 # update interval = 5, ezért elég 10 packet (6 is elég lenne)
 

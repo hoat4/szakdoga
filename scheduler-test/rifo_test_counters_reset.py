@@ -1,4 +1,6 @@
-from rifo_test_common import *
+from scheduler_test_common import *
+
+initScheduler("rifo", "10Kbit")
 
 # update intervalról feltesszük hogy 5
 
