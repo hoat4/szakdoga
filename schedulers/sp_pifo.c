@@ -40,10 +40,13 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	struct sp_pifo_sched_data *q = qdisc_priv(sch);
     
     u32 rank = 0;
+    bool nonIP = true;
     if (skb_protocol(skb, true) == htons(ETH_P_IP)) {
 	    const struct iphdr* iph = ip_hdr(skb);
-	    if(iph != NULL)
+	    if(iph != NULL) {
             rank = ntohs(iph->id);
+            nonIP = false;
+        }
     }
 
     int queueIndex = QUEUE_COUNT - 1;
@@ -52,8 +55,9 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
     
     if (queueIndex == 0 && rank < q->bounds[queueIndex]) {
         int dec = q->bounds[queueIndex] - rank;
+        pr_debug("[SP-PIFO] Push down because rank %d < %d: decrement %d from all queues", rank, q->bounds[queueIndex], dec);
         for (int i = 0; i < QUEUE_COUNT; i++) {
-            q->bounds[queueIndex] -= dec;
+            q->bounds[i] -= dec;
         }
     } else {
         q->bounds[queueIndex] = rank;
@@ -62,7 +66,13 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	struct sk_buff_head* qdisc = &q->qdiscs[queueIndex];
 
 	if (sch->q.qlen < sch->limit) {
-        pr_debug("enqueue rank %d to %d", rank, queueIndex);
+        if (nonIP)
+            pr_debug("[SP-PIFO] Enqueue non-IP to queue #%d (used %d/%d)", 
+                queueIndex, sch->q.qlen, sch->limit);
+        else
+	        pr_debug("[SP-PIFO] Enqueue rank %d to queue #%d (used %d/%d)", 
+                rank, queueIndex, sch->q.qlen, sch->limit);
+
 		__skb_queue_tail(qdisc, skb);
 		qdisc_qstats_backlog_inc(sch, skb);
 		q->qstats[queueIndex].backlog += qdisc_pkt_len(skb);
@@ -70,7 +80,11 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		return NET_XMIT_SUCCESS;
 	}
 
-    pr_debug("drop %d; used: %d, limit: %d", rank, sch->q.qlen, sch->limit);
+    if (nonIP) {
+        pr_debug("[SP-PIFO] Drop non-IP packet; used: %d, limit: %d", rank, sch->q.qlen, sch->limit);
+    } else {
+        pr_debug("[SP-PIFO] Drop with rank %d; used: %d, limit: %d", rank, sch->q.qlen, sch->limit);
+    }
 	return qdisc_drop(skb, sch, to_free);
 }
 
@@ -78,12 +92,23 @@ static struct sk_buff *sp_pifo_dequeue(struct Qdisc *sch)
 {
 	struct sp_pifo_sched_data *q = qdisc_priv(sch);
 
-    pr_debug("dequeue begin");
+    //pr_debug("[SP-PIFO] dequeue begin");
     for (int i = 0; i < QUEUE_COUNT; i++) {
         struct sk_buff *skb = __skb_dequeue(&q->qdiscs[i]);
     
         if (skb) {
-            pr_debug("dequeue from %d", i);
+    	    if (skb_protocol(skb, true) != htons(ETH_P_IP))
+    	    	pr_debug("[SP-PIFO] Dequeue non-IP from queue #%d", i);
+            else {
+    	        const struct iphdr *iph = ip_hdr(skb);
+	            if(iph == NULL)
+            		pr_debug("[SP-PIFO] Dequeue non-IP from queue #%d", i);
+                else {
+                    u32 rank = iph == NULL ? 0 : ntohs(iph->id);
+                    pr_debug("[SP-PIFO] Dequeue with rank %d from queue #%d", rank, i); 
+                }
+            }
+
             sch->q.qlen--;
             qdisc_qstats_backlog_dec(sch, skb);
             qdisc_bstats_update(sch, skb);
@@ -92,7 +117,7 @@ static struct sk_buff *sp_pifo_dequeue(struct Qdisc *sch)
             return skb;
         }
     }
-    pr_debug("dequeue no");
+    pr_debug("[SP-PIFO] Can't dequeue because empty");
     return NULL;
 }
 
