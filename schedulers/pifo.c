@@ -96,16 +96,21 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
     //pr_debug("micsoda: %d", skb_protocol(skb, true));
     //pr_debug("skb 1: %p", skb);
 
+    /*
 	if (skb_protocol(skb, true) == htons(ETH_P_ARP)) {
         struct arphdr* arphdr = arp_hdr(skb);
         //pr_debug("arp op: %d", arphdr->ar_op);
     }
+    */
 
+    bool nonIP = true;
 	if (skb_protocol(skb, true) == htons(ETH_P_IP)) {
         iph = ip_hdr(skb);
         //pr_warn("protocol: %d", iph->protocol);
-    	if(iph != NULL)
+    	if(iph != NULL) {
             rank = ntohs(iph->id);
+            nonIP = false;
+        }
     }
 
     // TODO mi legyen ha túl rövid? megtelik a queue
@@ -117,7 +122,11 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
     };
     
     if (sch->qstats.backlog + qdisc_pkt_len(skb) > q->params.limit) {
-        pr_debug("drop");
+        if (nonIP) {
+            pr_debug("[PIFO] Drop non-IP packet (used bytes: %d/%d)", sch->qstats.backlog, q->params.limit);
+        } else {
+            pr_debug("[PIFO] Drop with rank %d (used bytes: %d/%d)", rank, sch->qstats.backlog, q->params.limit);
+        }
         q->stats.droppedNewPacket++;
         return qdisc_drop(skb, sch, to_free);
     } else {
@@ -132,7 +141,12 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
         //pr_warn("read from %p", s);
         skb = s->skb;
         //pr_warn("enq result %p, rank %d", skb, s->rank);
-        
+        if (nonIP) {
+            pr_debug("[PIFO] Enqueue non-IP (used bytes: %d/%d)", sch->qstats.backlog, q->params.limit);
+        } else {
+	        pr_debug("[PIFO] Enqueue rank %d (used bytes: %d/%d)", rank, sch->qstats.backlog, q->params.limit);
+        }
+
 
         return NET_XMIT_SUCCESS;
     }
@@ -141,6 +155,7 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 //if (skb_protocol(skb, true) != htons(ETH_P_IP))
 static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
 {
+    pr_debug("[PIFO] dequeue begin");
 	struct pifo_sched_data *q = qdisc_priv(sch);
     if (q->vars.min_heap.nr > 0) {
         //pr_debug("deq success (%d elements)", q->vars.min_heap.nr);
@@ -150,10 +165,22 @@ static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
         min_heap_pop(&q->vars.min_heap, &min_heap_callbacks);
         sch->q.qlen--;
         sch->qstats.backlog -= qdisc_pkt_len(skb);
-        //pr_debug("deq success p: %d", skb_protocol(skb, true));
+        
+    	if (skb_protocol(skb, true) != htons(ETH_P_IP))
+	    	pr_debug("[PIFO] Dequeue non-IP");
+        else {
+	        const struct iphdr *iph = ip_hdr(skb);
+	        if(iph == NULL)
+        		pr_debug("[PIFO] Dequeue non-IP");
+            else {
+                u32 rank = iph == NULL ? 0 : ntohs(iph->id);
+                pr_debug("[PIFO] Dequeue with rank %d", rank); 
+            }
+        }
+        
         return skb;
     } else {
-        pr_debug("deq fail");
+        pr_debug("[PIFO] Can't dequeue because empty");
         return NULL;
     }
 }
@@ -174,6 +201,7 @@ static struct sk_buff *pifo_peek(struct Qdisc *sch)
 static void pifo_reset(struct Qdisc *sch)
 {
 	struct pifo_sched_data *q = qdisc_priv(sch);
+    pr_debug("[PIFO] Free %d items from minheap", q->vars.min_heap.nr);
     if (q->vars.min_heap.nr > 0) {
         skb_and_rank* arr = (skb_and_rank*) q->vars.min_heap.data;
         for (int i = 0; i < q->vars.min_heap.nr - 1; i++) {
@@ -187,10 +215,12 @@ static void pifo_reset(struct Qdisc *sch)
 
 static void pifo_destroy(struct Qdisc *sch)
 {
+    pr_debug("[PIFO] destroy");
     pifo_reset(sch);
 
     struct pifo_sched_data *q = qdisc_priv(sch);
     vfree(q->vars.min_heap.data);
+    pr_debug("[PIFO] destroy done");
 }
 
 

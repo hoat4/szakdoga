@@ -66,12 +66,13 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	struct sk_buff_head* qdisc = &q->qdiscs[queueIndex];
 
 	if (sch->q.qlen < sch->limit) {
-        if (nonIP)
+        if (nonIP) {
             pr_debug("[SP-PIFO] Enqueue non-IP to queue #%d (used %d/%d)", 
                 queueIndex, sch->q.qlen, sch->limit);
-        else
+        } else {
 	        pr_debug("[SP-PIFO] Enqueue rank %d to queue #%d (used %d/%d)", 
                 rank, queueIndex, sch->q.qlen, sch->limit);
+        }
 
 		__skb_queue_tail(qdisc, skb);
 		qdisc_qstats_backlog_inc(sch, skb);
@@ -81,7 +82,7 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	}
 
     if (nonIP) {
-        pr_debug("[SP-PIFO] Drop non-IP packet; used: %d, limit: %d", rank, sch->q.qlen, sch->limit);
+        pr_debug("[SP-PIFO] Drop non-IP packet; used: %d, limit: %d", sch->q.qlen, sch->limit);
     } else {
         pr_debug("[SP-PIFO] Drop with rank %d; used: %d, limit: %d", rank, sch->q.qlen, sch->limit);
     }
