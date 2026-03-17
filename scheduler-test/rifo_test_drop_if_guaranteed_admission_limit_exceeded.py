@@ -2,13 +2,10 @@ from scheduler_test_common import *
 
 initScheduler("rifo", "10Kbit")
 
-
-# update interval = 5, ezért elég 10 packet (6 is elég lenne)
-
 for i in range(0, 30):
     rank = 10000 if i % 2 == 0 else 1
     len = 90
-    sendWithRank(rank, 90)
+    sendWithRank(rank, len)
 
 print("Done")
 
