@@ -208,6 +208,7 @@ static void pifo_reset(struct Qdisc *sch)
             arr[i].skb->next = arr[i + 1].skb;
         }
         rtnl_kfree_skbs(arr[0].skb, arr[q->vars.min_heap.nr - 1].skb);
+        q->vars.min_heap.nr = 0;
     }
     sch->qstats.backlog = 0;
 }
