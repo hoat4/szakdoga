@@ -134,6 +134,9 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
         min_heap_push(&(q->vars.min_heap), &s, &min_heap_callbacks);
         sch->qstats.backlog += qdisc_pkt_len(skb);
         sch->q.qlen++; // sch_htb enélkül nem megy
+        // sch_api.c-ben írják is:
+        // "For complicated disciplines with multiple queues q->q is not
+        //  real packet queue, but however q->q.qlen must be valid."
 
         
         //pr_warn("enq success (%d elements)", q->vars.min_heap.nr);
@@ -202,6 +205,8 @@ static void pifo_reset(struct Qdisc *sch)
 {
 	struct pifo_sched_data *q = qdisc_priv(sch);
     pr_debug("[PIFO] Free %d items from minheap", q->vars.min_heap.nr);
+    if (q->vars.min_heap.nr != sch->q.qlen)
+        printk(KERN_ERR "q->vars.min_heap.nr != sch->q.qlen: %d vs %d", q->vars.min_heap.nr, sch->q.qlen);
     if (q->vars.min_heap.nr > 0) {
         skb_and_rank* arr = (skb_and_rank*) q->vars.min_heap.data;
         for (int i = 0; i < q->vars.min_heap.nr - 1; i++) {
@@ -209,6 +214,7 @@ static void pifo_reset(struct Qdisc *sch)
         }
         rtnl_kfree_skbs(arr[0].skb, arr[q->vars.min_heap.nr - 1].skb);
         q->vars.min_heap.nr = 0;
+        sch->q.qlen = 0;
     }
     sch->qstats.backlog = 0;
 }
