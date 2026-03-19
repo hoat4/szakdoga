@@ -30,6 +30,7 @@ struct pifo_stats {
 
 struct pifo_vars {
     struct min_heap min_heap;
+    u64 packetCounter; // ld. skb_and_rank.order
 };
 
 struct pifo_sched_data {
@@ -43,12 +44,14 @@ struct pifo_sched_data {
 typedef struct skb_and_rank {
     struct sk_buff* skb;
     u32 rank;
+    u64 order; // ld. pifo_sched_data.packetCounter
 } skb_and_rank;
 
 bool rank_less_than(const void *lhs, const void *rhs);
 
 bool rank_less_than(const void *lhs, const void *rhs) {
-    return ((skb_and_rank *)lhs)->rank < ((skb_and_rank *)rhs)->rank;
+    skb_and_rank *a = ((skb_and_rank *)lhs), *b = ((skb_and_rank *)rhs);
+    return a->rank < b->rank || (a->rank == b->rank && a->order < b->order);
 }
 
 void skb_and_rank_swap(void *a, void *b);
@@ -71,7 +74,7 @@ static int pifo_init(struct Qdisc *sch, struct nlattr *arg,
 {
     struct pifo_sched_data *q = qdisc_priv(sch);
     memset(q, 0, sizeof(struct pifo_sched_data));
-    sch->limit = q->params.limit = 2500000;
+    sch->limit = q->params.limit = PIFO_QUEUE_LENGTH_BYTES; // Makefileból állítható
     q->sch = sch;
 
     int max_packets = q->params.limit / 28;
@@ -79,6 +82,7 @@ static int pifo_init(struct Qdisc *sch, struct nlattr *arg,
     q->vars.min_heap.data = vmalloc(max_packets * sizeof(struct sk_buff*));
     q->vars.min_heap.nr = 0;
     q->vars.min_heap.size = max_packets;
+    q->vars.packetCounter = 0;
     pr_debug("vmalloc result %p", q->vars.min_heap.data);
 
     return 0;
@@ -118,9 +122,19 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
     skb_and_rank s = {
         .skb = skb, 
-        .rank = rank
+        .rank = rank, 
+        .order = q->vars.packetCounter++
     };
     
+    
+    // Ez így nem biztos hogy értelmes, hogy mindenképpen droppolja, ha tele a queue.
+    // Inkább az kéne, hogy ha tele a queue, de van nagyobb rankú packet, akkor azt dobja ki, 
+    // és a helyére rakja az újat.
+    // Viszont ehhez az kéne, hogy ki tudjuk szedni a max elemet, 
+    // amihez lehet hogy kéne még egy heap, amit már nehéz karbantartani.
+
+    // PIFO paperben nem találtam semmit limitekről, így droppolásról sem.
+
     if (sch->qstats.backlog + qdisc_pkt_len(skb) > q->params.limit) {
         if (nonIP) {
             pr_debug("[PIFO] Drop non-IP packet (used bytes: %d/%d)", sch->qstats.backlog, q->params.limit);
@@ -138,12 +152,6 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
         // "For complicated disciplines with multiple queues q->q is not
         //  real packet queue, but however q->q.qlen must be valid."
 
-        
-        //pr_warn("enq success (%d elements)", q->vars.min_heap.nr);
-        skb_and_rank* s = (skb_and_rank*) q->vars.min_heap.data;
-        //pr_warn("read from %p", s);
-        skb = s->skb;
-        //pr_warn("enq result %p, rank %d", skb, s->rank);
         if (nonIP) {
             pr_debug("[PIFO] Enqueue non-IP (used bytes: %d/%d)", sch->qstats.backlog, q->params.limit);
         } else {
@@ -217,6 +225,7 @@ static void pifo_reset(struct Qdisc *sch)
         sch->q.qlen = 0;
     }
     sch->qstats.backlog = 0;
+    q->vars.packetCounter = 0;
 }
 
 

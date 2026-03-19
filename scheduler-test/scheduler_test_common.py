@@ -8,7 +8,7 @@ import time
 import subprocess
 
 
-def executeInMininet(schedulerName, bandwidth):
+def executeInMininet(schedulerName, bandwidth, showIncomingPackets):
     # enélkül nem megy a waitOutput
     mininet.log.setLogLevel('info') 
 
@@ -28,22 +28,44 @@ def executeInMininet(schedulerName, bandwidth):
 
     print("")
 
-    #h2.sendCmd("ping 10.0.0.1")
-    h2.sendCmd("python \"" + sys.argv[0]+"\" h2")
-        
+    if showIncomingPackets:
+        h1.sendCmd("python \"" + sys.argv[0]+"\" h1")
+    
+    h2.sendCmd("python \"" + sys.argv[0]+"\" h2")    
     h2.waitOutput(verbose=True)
 
     print("")
     print("Inner process done")
+
+    if showIncomingPackets:
+        h1.sendInt()
+        while h1.waiting:
+            if not h1.waitReadable(100):
+                break
+            print(h1.monitor())
+
     net.stop()
 
 
 def sendWithRank(rank, len):
-    print("Send with rank " + str(rank))
+    print("Send with rank " + str(rank) + " (" + str(len) + " bytes)")
     p = IP(dst="10.0.0.1", id = rank) / UDP(sport = 12345, dport=50005) / ("a" * len) 
     send(p)
 
-def initScheduler(schedulerName, bandwidth):
+def sendWithRankAndContent(rank, contentString):
+    print("Send with rank " + str(rank) + ": " + contentString)
+    p = IP(dst="10.0.0.1", id = rank) / UDP(sport = 12345, dport=50005) / contentString
+    send(p)
+
+def packetReceived(x):
+    print("Received packet with rank " + str(x[IP].id) + " and contents: " + str(bytes(x[UDP].payload)))
+    sys.stdout.flush()
+
+def initScheduler(schedulerName, bandwidth, showIncomingPackets = False):
+    if len(sys.argv) == 2 and sys.argv[1] == "h1":
+        sniff(iface = 'h1-eth0', filter = "udp dst portrange 50001-50015", prn=packetReceived)
+        exit()
+            
     if len(sys.argv) == 1 or sys.argv[1] != "h2":
-        executeInMininet(schedulerName, bandwidth)
+        executeInMininet(schedulerName, bandwidth, showIncomingPackets)
         exit()
