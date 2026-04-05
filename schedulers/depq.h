@@ -15,8 +15,8 @@ typedef struct heap {
   int size;
 } heap_t;
 
-void mmh_insert(heap_t* h, skb_and_rank value);
-skb_and_rank mmh_pop_min(heap_t* h);
-skb_and_rank mmh_pop_max(heap_t* h);
+bool mmh_insert(heap_t* h, skb_and_rank value);
+bool mmh_pop_min(heap_t* h, skb_and_rank* out);
+bool mmh_pop_max(heap_t* h, skb_and_rank* out);
 
 #endif  // DEPQ_H_

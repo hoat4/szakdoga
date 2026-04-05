@@ -6,6 +6,9 @@ CC += ${CFLAGS}
 # 2500000, 100
 
 obj-m += rifo.o sp_pifo.o pifo.o
+
+pifo-objs := pifo_main.o depq.o
+
 vacak:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 	EXTRA_CFLAGS="${CFLAGS}"
