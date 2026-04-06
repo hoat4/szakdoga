@@ -26,14 +26,6 @@ static void swap(heap_t* h, int i, int j) {
   h->data[j] = tmp;
 }
 
-static bool less_than(skb_and_rank a, skb_and_rank b) {
-    return a.rank < b.rank || (a.rank == b.rank && a.order < b.order);
-}
-
-static bool greater_than(skb_and_rank a, skb_and_rank b) {
-    return a.rank > b.rank || (a.rank == b.rank && a.order > b.order);
-}
-
 static void bubbleup_min(heap_t* h, int i) {
   int pp_idx = parent(parent(i));
   if (pp_idx <= 0) return;
@@ -204,6 +196,32 @@ bool mmh_pop_max(heap_t* h, skb_and_rank* out) {
 
   if (h->count == 1) {
     h->count--;
+    *out = h->data[1];
+    return true;
+  }
+  return false;
+}
+
+
+bool mmh_peek_min(heap_t* h, skb_and_rank* out) {
+  if (h->count > 0) {
+    *out = h->data[1];
+    return true;
+  }
+  return false;
+}
+
+bool mmh_peek_max(heap_t* h, skb_and_rank* out) {
+  if (h->count > 2) {
+    skb_and_rank a = h->data[2], b = h->data[3];
+    *out = greater_than(a, b) ? a : b;
+    return true;
+  }
+  if (h->count == 2) {
+    *out = h->data[2];
+    return true;
+  }
+  if (h->count == 1) {
     *out = h->data[1];
     return true;
   }

@@ -9,6 +9,14 @@ typedef struct skb_and_rank {
     u64 order; // ld. pifo_sched_data.packetCounter
 } skb_and_rank;
 
+static inline bool less_than(skb_and_rank a, skb_and_rank b) {
+    return a.rank < b.rank || (a.rank == b.rank && a.order < b.order);
+}
+
+static inline bool greater_than(skb_and_rank a, skb_and_rank b) {
+    return a.rank > b.rank || (a.rank == b.rank && a.order > b.order);
+}
+
 typedef struct heap {
   skb_and_rank* data;
   int count;
@@ -16,7 +24,13 @@ typedef struct heap {
 } heap_t;
 
 bool mmh_insert(heap_t* h, skb_and_rank value);
+bool mmh_peek_min(heap_t* h, skb_and_rank* out);
+bool mmh_peek_max(heap_t* h, skb_and_rank* out);
 bool mmh_pop_min(heap_t* h, skb_and_rank* out);
 bool mmh_pop_max(heap_t* h, skb_and_rank* out);
+
+static inline int mmh_capacity(heap_t* h) {
+    return h->size - 1;
+}
 
 #endif  // DEPQ_H_
