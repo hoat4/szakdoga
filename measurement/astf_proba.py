@@ -1,13 +1,14 @@
 from trex.astf.api import *
 from prometheus_client import start_http_server, Gauge, Histogram
 import time
+import subprocess
 from scapy.all import *
 from scapy.sendrecv import AsyncSniffer
 
-throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben")
-ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok")
-opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok")
-flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time")
+throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben", ["scheduler"])
+ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", ["scheduler"])
+opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", ["scheduler"])
+flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time", ["scheduler"])
 
 start_http_server(18001)
 
@@ -49,6 +50,8 @@ def makeProfile():
         templates = [template]
     )
 
+currentScheduler = ""
+
 connectionBegins = {}
 def handleSniffedPacket(packet):
     if packet[IP].src != "2.2.2.2":
@@ -66,37 +69,60 @@ def handleSniffedPacket(packet):
                 print("Flow begin not detected: " + connectionID)
                 return
             beginTime = connectionBegins[connectionID]
-            flowCompletionTimeHistogram.observe((now-beginTime) * 1000)
+            flowCompletionTimeHistogram.labels(scheduler=currentScheduler).observe((now-beginTime) * 1000)
         case _:
             raise "unknown TCP flags: " + packet.summary()
 
-AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth1", prn=handleSniffedPacket).start()
+NO_SCHEDULER = "none"
+def runMeasurement(scheduler):
+    print("Begin with scheduler: " + scheduler)
+    currentScheduler = scheduler
 
-c = ASTFClient()
-c.connect()
-c.reset()
-c.load_profile(makeProfile())
+    if scheduler != NO_SCHEDULER:
+        subprocess.run(["tc", "qdisc", "add", "dev", "veth2", "root", scheduler], check=True)
 
-c.clear_stats()
-c.start(mult = 1, duration = 50)
+    AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth1", prn=handleSniffedPacket).start()
 
-prevTime = time.monotonic()
-prevConnCloses = 0
-while c.get_active_ports():
-    stats = c.get_stats()
-    ipacketsGauge.set(stats['total']['ipackets'])
-    opacketsGauge.set(stats['total']['opackets'])
-    throughputGauge.set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
-    #currConnCloses = stats['traffic']['server']['tcps_closed']
-    #if currConnCloses > prevConnCloses:
+    c = ASTFClient()
+    c.connect()
+    c.reset()
+    c.load_profile(makeProfile())
+
+    c.clear_stats()
+    c.start(mult = 1, duration = 15)
+
+    while c.get_active_ports():
+        stats = c.get_stats()
+        ipacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['ipackets'])
+        opacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['opackets'])
+        throughputGauge.labels(scheduler=currentScheduler).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
         
-    time.sleep(0.01)
+        time.sleep(0.01)
 
-# végén m_tx_bw_l7_total_r-et lehetne kiírni stdoutra
+    # végén m_tx_bw_l7_total_r-et lehetne kiírni stdoutra
 
-stats = c.get_stats()
-ipackets  = stats['total']['ipackets']
-opackets  = stats['total']['opackets']
+    stats = c.get_stats()
+    ipackets  = stats['total']['ipackets']
+    opackets  = stats['total']['opackets']
 
-print("Done - Packets Sent: {0}, Received: {1}".format(opackets, ipackets))
-print(stats)
+    print("Done with scheduler {0} - Packets Sent: {1}, Received: {2}".format(scheduler, opackets, ipackets))
+    #print(stats)
+
+    ipacketsGauge.clear()
+    opacketsGauge.clear()
+    throughputGauge.clear()
+    flowCompletionTimeHistogram.clear()
+
+    if scheduler != NO_SCHEDULER:
+        subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", scheduler], check=True)
+
+print("Removing leftover qdiscs")
+subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", "rifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", "pifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", "sp_pifo"])
+print("Done removing leftover qdiscs")
+    
+runMeasurement(NO_SCHEDULER)
+runMeasurement("rifo")
+runMeasurement("pifo")
+runMeasurement("sp_pifo")
