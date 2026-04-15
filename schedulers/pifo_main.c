@@ -24,8 +24,10 @@ struct pifo_params {
 };
 
 struct pifo_stats {
-	u32 droppedNewPacket;
-    u32 droppedOldPacket;
+    u64 latency_sum;
+    u64 latency_count;
+    u64 dropped_new_packet;
+    u64 dropped_old_packet;
 };
 
 struct pifo_vars {
@@ -112,6 +114,11 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	        pr_debug("[PIFO] Enqueue rank %d (used bytes: %d/%d)", rank, sch->qstats.backlog, q->params.limit);
         }
 
+        if (skb->tstamp == 0)
+            skb->tstamp = ktime_get();
+        else
+            printk(KERN_WARNING "[PIFO] skb->tstamp already used, latency statistics will be wrong");
+
         return NET_XMIT_SUCCESS;
     } else {
         // PIFO paperben nem találtam semmit limitekről, így droppolásról sem.
@@ -123,7 +130,7 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
             pr_debug("[PIFO] Drop with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
                 rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
         }
-        q->stats.droppedNewPacket++;
+        q->stats.dropped_new_packet++;
         return qdisc_drop(skb, sch, to_free);
     }
 }
@@ -152,7 +159,14 @@ static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
                 pr_debug("[PIFO] Dequeue with rank %d", rank); 
             }
         }
-        
+
+        ktime_t now = ktime_get();
+        ktime_t latency = now - skb->tstamp;
+        q->stats.latency_sum += latency;
+        q->stats.latency_count++;
+        printk("[PIFO] dequeue latency %lld", latency);
+        skb->tstamp = 0;
+
         return skb;
     } else {
         pr_debug("[PIFO] Can't dequeue because empty");
@@ -190,6 +204,11 @@ static void pifo_reset(struct Qdisc *sch)
     }
     sch->qstats.backlog = 0;
     q->vars.packetCounter = 0;
+    
+    q->stats.latency_sum = 0;
+    q->stats.latency_count = 0;
+    q->stats.dropped_new_packet = 0;
+    q->stats.dropped_old_packet = 0;
 }
 
 
@@ -208,6 +227,13 @@ static void pifo_destroy(struct Qdisc *sch)
 
 static int pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 {
+    struct pifo_sched_data *q = qdisc_priv(sch);
+    printk(KERN_INFO "[PIFO] Statistics: latency: %llu / %llu = %llu, drop old: %llu, drop new: %llu", 
+        q->stats.latency_sum, q->stats.latency_count, 
+        q->stats.latency_sum / (q->stats.latency_count == 0 ? 1 : q->stats.latency_count), 
+        q->stats.dropped_old_packet, q->stats.dropped_new_packet);
+    q->stats.latency_sum = 0;
+    q->stats.latency_count = 0;
 	return -1;
 }
 

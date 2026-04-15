@@ -17,6 +17,10 @@ struct sp_pifo_sched_data {
 	struct sk_buff_head qdiscs[QUEUE_COUNT];
     int bounds[QUEUE_COUNT];
 	struct gnet_stats_queue qstats[QUEUE_COUNT];
+
+    u64 latency_sum;
+    u64 latency_count;
+    u64 drop_because_queue_full;
 };
 
 
@@ -78,9 +82,16 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		qdisc_qstats_backlog_inc(sch, skb);
 		q->qstats[queueIndex].backlog += qdisc_pkt_len(skb);
 		sch->q.qlen++;
-		return NET_XMIT_SUCCESS;
+
+        if (skb->tstamp == 0)
+            skb->tstamp = ktime_get();
+        else
+            printk(KERN_WARNING "[SP-PIFO] skb->tstamp already used, latency statistics will be wrong");
+
+        return NET_XMIT_SUCCESS;
 	}
 
+    q->drop_because_queue_full++;
     if (nonIP) {
         pr_debug("[SP-PIFO] Drop non-IP packet; used: %d, limit: %d", sch->q.qlen, sch->limit);
     } else {
@@ -115,6 +126,14 @@ static struct sk_buff *sp_pifo_dequeue(struct Qdisc *sch)
             qdisc_bstats_update(sch, skb);
         
             q->qstats[i].backlog -= qdisc_pkt_len(skb);
+
+            ktime_t now = ktime_get();
+            ktime_t latency = now - skb->tstamp;
+            q->latency_sum += latency;
+            q->latency_count++;
+            printk("[SP-PIFO] dequeue latency %lld", latency);
+            skb->tstamp = 0;
+
             return skb;
         }
     }
@@ -140,11 +159,22 @@ static void sp_pifo_reset(struct Qdisc *sch)
 		__skb_queue_purge(&q->qdiscs[i]);
 
 	memset(&q->qstats, 0, sizeof(q->qstats));
+
+    q->drop_because_queue_full = 0;
+    q->latency_sum = 0;
+    q->latency_count = 0;
 }
 
 
 static int sp_pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 {
+    struct sp_pifo_sched_data *q = qdisc_priv(sch);
+    printk(KERN_INFO "[SP-PIFO] Statistics: latency: %llu / %llu = %llu, drop because full: %llu", 
+        q->latency_sum, q->latency_count, 
+        q->latency_sum / (q->latency_count == 0 ? 1 : q->latency_count), 
+        q->drop_because_queue_full);
+    q->latency_sum = 0;
+    q->latency_count = 0;
 	return -1;
 }
 

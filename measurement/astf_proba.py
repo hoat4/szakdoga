@@ -1,14 +1,20 @@
 from trex.astf.api import *
-from prometheus_client import start_http_server, Gauge, Histogram
+from prometheus_client import start_http_server, Gauge, Histogram, Counter
 import time
 import subprocess
 from scapy.all import *
 from scapy.sendrecv import AsyncSniffer
 
-throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben", ["scheduler"])
+def floatRange(begin, end, divisions):
+    return [begin + (end - begin) * x / divisions for x in range(1, divisions + 1)]
+
+throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", ["scheduler"])
 ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", ["scheduler"])
 opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", ["scheduler"])
-flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time", ["scheduler"])
+flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time", ["scheduler"], 
+                                        buckets = floatRange(0.25, 1, 20))
+latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", ["scheduler"])
+packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", ["scheduler", "dropReason"])
 
 start_http_server(18001)
 
@@ -36,7 +42,7 @@ def makeProfile():
         client_template=ASTFTCPClientTemplate(
             program = prog_c,
             port = 50010,
-            cps = 5, 
+            cps = 25, 
             ip_gen = ip_gen
         ),
         server_template=ASTFTCPServerTemplate(
@@ -50,7 +56,7 @@ def makeProfile():
         templates = [template]
     )
 
-currentScheduler = ""
+global currentScheduler
 
 connectionBegins = {}
 def handleSniffedPacket(packet):
@@ -64,17 +70,42 @@ def handleSniffedPacket(packet):
             print(str(now) + " Conn begin " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport))
             connectionBegins[connectionID] = now
         case "FA":
-            print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport))
             if connectionID not in connectionBegins:
                 print("Flow begin not detected: " + connectionID)
                 return
             beginTime = connectionBegins[connectionID]
-            flowCompletionTimeHistogram.labels(scheduler=currentScheduler).observe((now-beginTime) * 1000)
+            flowCompletionTime = now-beginTime
+            print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
+                  " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
+            flowCompletionTimeHistogram.labels(scheduler=currentScheduler).observe(flowCompletionTime)
         case _:
             raise "unknown TCP flags: " + packet.summary()
 
+def findInDMesg(prefix):
+    process = subprocess.run(
+        ["dmesg", "-t"], # -t = without timestamps
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True
+    )
+    
+    # tc qdisc showkor kétszer hívódik meg a qdisc dump, ezért
+    # az utolsónál a latency ki lesz nullázódva
+
+    foundOne = False
+    for line in reversed(process.stdout.splitlines()):
+        if line.startswith(prefix):
+            if foundOne:
+                return line
+            else:
+                foundOne = True
+      
+    raise "no line found in dmesg starting with \"" + prefix + "\""
+
 NO_SCHEDULER = "none"
 def runMeasurement(scheduler):
+    global currentScheduler
     print("Begin with scheduler: " + scheduler)
     currentScheduler = scheduler
 
@@ -96,7 +127,27 @@ def runMeasurement(scheduler):
         ipacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['ipackets'])
         opacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['opackets'])
         throughputGauge.labels(scheduler=currentScheduler).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
-        
+
+        if scheduler != NO_SCHEDULER:
+            subprocess.run(["tc", "qdisc", "show", "dev", "veth2"], check=True)
+            prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO"}[scheduler] + "] Statistics: "
+            msg = findInDMesg(prefix)[len(prefix):]
+            for stat in msg.split(", "):
+                [statName, statVal] = stat.split(": ")
+                if statName == "latency":
+                    statVal = statVal.split(" = ")[1]
+                statVal = float(statVal)
+                if statName == "latency":
+                    statVal = statVal / 1000000 # ns -> ms
+                counter = {
+                    "latency": latencyGauge.labels(scheduler = currentScheduler),
+                    "drop because full": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "queueFull"),
+                    "drop because priority too low": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "priorityTooLow"), 
+                    "drop old": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropOld"),
+                    "drop new": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNew")
+                }[statName]
+                counter.set(statVal)
+
         time.sleep(0.01)
 
     # végén m_tx_bw_l7_total_r-et lehetne kiírni stdoutra
@@ -112,6 +163,8 @@ def runMeasurement(scheduler):
     opacketsGauge.clear()
     throughputGauge.clear()
     flowCompletionTimeHistogram.clear()
+    latencyGauge.clear()
+    packetDropCounter.clear()
 
     if scheduler != NO_SCHEDULER:
         subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", scheduler], check=True)
