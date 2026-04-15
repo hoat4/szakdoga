@@ -164,7 +164,7 @@ static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
         ktime_t latency = now - skb->tstamp;
         q->stats.latency_sum += latency;
         q->stats.latency_count++;
-        printk("[PIFO] dequeue latency %lld", latency);
+        pr_debug("[PIFO] dequeue latency %lld", latency);
         skb->tstamp = 0;
 
         return skb;
