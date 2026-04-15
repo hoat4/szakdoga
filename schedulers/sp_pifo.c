@@ -180,7 +180,11 @@ static int sp_pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 
 struct Qdisc_ops sp_pifo_qdisc_ops __read_mostly = {
+#ifdef DEBUG
+	.id		=	"sp_pifo_debug",
+#else
 	.id		=	"sp_pifo",
+#endif
 	.priv_size	=	sizeof(struct sp_pifo_sched_data),
 	.enqueue	=	sp_pifo_enqueue,
 	.dequeue	=	sp_pifo_dequeue,
@@ -192,7 +196,6 @@ struct Qdisc_ops sp_pifo_qdisc_ops __read_mostly = {
 	.dump		=	sp_pifo_dump,
 	.owner		=	THIS_MODULE,
 };
-EXPORT_SYMBOL(sp_pifo_qdisc_ops);
 
 static int __init sp_pifo_module_init(void)
 {

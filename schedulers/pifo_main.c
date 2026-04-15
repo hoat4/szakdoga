@@ -239,7 +239,11 @@ static int pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 
 struct Qdisc_ops pifo_qdisc_ops __read_mostly = {
+#ifdef DEBUG
+	.id		=	"pifo_debug",
+#else
 	.id		=	"pifo",
+#endif
 	.priv_size	=	sizeof(struct pifo_sched_data),
 	.enqueue	=	pifo_enqueue,
 	.dequeue	=	pifo_dequeue,
@@ -252,7 +256,6 @@ struct Qdisc_ops pifo_qdisc_ops __read_mostly = {
 	.dump		=	pifo_dump,
 	.owner		=	THIS_MODULE,
 };
-EXPORT_SYMBOL(pifo_qdisc_ops);
 
 static int __init pifo_module_init(void)
 {

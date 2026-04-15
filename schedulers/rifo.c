@@ -151,7 +151,7 @@ static struct sk_buff *rifo_dequeue(struct Qdisc *sch)
         ktime_t latency = now - skb->tstamp;
         q->stats.latency_sum += latency;
         q->stats.latency_count++;
-        printk("[RIFO] dequeue latency %lld", latency);
+        pr_debug("[RIFO] dequeue latency %lld", latency);
         skb->tstamp = 0;
     } else {
         pr_debug("[RIFO] No packet to be dequeued");
@@ -192,7 +192,11 @@ static int rifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 
 struct Qdisc_ops rifo_qdisc_ops __read_mostly = {
+#ifdef DEBUG
+	.id		=	"rifo_debug",
+#else
 	.id		=	"rifo",
+#endif
 	.priv_size	=	sizeof(struct rifo_sched_data),
 	.enqueue	=	rifo_enqueue,
 	.dequeue	=	rifo_dequeue,
@@ -205,7 +209,6 @@ struct Qdisc_ops rifo_qdisc_ops __read_mostly = {
 	.dump		=	rifo_dump,
 	.owner		=	THIS_MODULE,
 };
-EXPORT_SYMBOL(rifo_qdisc_ops);
 
 static int __init rifo_module_init(void)
 {
