@@ -15,6 +15,12 @@
 
 #define UINT32_MAX 4294967295
 
+#ifdef DEBUG
+#define PIFO_QUEUE_LENGTH_BYTES 10000
+#else
+#define PIFO_QUEUE_LENGTH_BYTES 100000
+#endif
+
 struct pifo_params {
     /**
      * max queue length in bytes ("B")
@@ -47,7 +53,7 @@ static int pifo_init(struct Qdisc *sch, struct nlattr *arg,
 {
     struct pifo_sched_data *q = qdisc_priv(sch);
     memset(q, 0, sizeof(struct pifo_sched_data));
-    sch->limit = q->params.limit = PIFO_QUEUE_LENGTH_BYTES; // Makefileból állítható
+    sch->limit = q->params.limit = PIFO_QUEUE_LENGTH_BYTES;
     q->sch = sch;
 
     int max_packets = q->params.limit / 28;

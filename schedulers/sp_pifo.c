@@ -10,6 +10,7 @@
 #include <linux/math64.h>
 
 #define QUEUE_COUNT 8
+#define QUEUE_LENGTH_PACKETS 100
 
 struct sp_pifo_sched_data {
 	struct Qdisc *sch;
@@ -30,7 +31,7 @@ static int sp_pifo_init(struct Qdisc *sch, struct nlattr *arg,
     struct sp_pifo_sched_data *q = qdisc_priv(sch);
     memset(q, 0, sizeof(struct sp_pifo_sched_data));
 
-    sch->limit = 50; // packetek maximális száma
+    sch->limit = QUEUE_LENGTH_PACKETS;
     
 	for (int i = 0; i < QUEUE_COUNT; i++)
         __skb_queue_head_init(&q->qdiscs[i]);
