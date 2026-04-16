@@ -18,20 +18,26 @@ packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", ["sch
 
 start_http_server(18001)
 
-def makeProfile():
-    FLOW_SIZE = 5 * 1024 * 1024
-
+def makeProfile(port, flowSize, cps):
     # client program
     prog_c = ASTFProgram()
     prog_c.connect()
-    prog_c.send(b'x' * FLOW_SIZE)
+    if flowSize <= 1_000_000:
+        prog_c.send(b'x' * flowSize)
+    else:
+        if int(flowSize) != flowSize:
+            raise "larger than 1MB but not dividable by 1MB: " + str(flowSize)
+        prog_c.set_var("var2", int(flowSize / 1_000_000));
+        prog_c.set_label("a:");
+        prog_c.send(b'x' * 1_000_000)
+        prog_c.jmp_nz("var2","a:") 
 
     # Server program
     prog_s = ASTFProgram()
     prog_s.accept()
 
     # Receive from client
-    prog_s.recv(FLOW_SIZE)
+    prog_s.recv(flowSize)
 
     ip_gen = ASTFIPGen(
         dist_client=ASTFIPGenDist(ip_range=["2.2.2.2", "2.2.2.2"]),
@@ -41,13 +47,13 @@ def makeProfile():
     template = ASTFTemplate(
         client_template=ASTFTCPClientTemplate(
             program = prog_c,
-            port = 50010,
-            cps = 25, 
+            port = port,
+            cps = cps, 
             ip_gen = ip_gen
         ),
         server_template=ASTFTCPServerTemplate(
             program = prog_s,
-            assoc = ASTFAssociationRule(port=50010)
+            assoc = ASTFAssociationRule(port=port)
         )
     )
 
@@ -110,14 +116,15 @@ def runMeasurement(scheduler):
     currentScheduler = scheduler
 
     if scheduler != NO_SCHEDULER:
-        subprocess.run(["tc", "qdisc", "add", "dev", "veth2", "root", scheduler], check=True)
+        subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "parent", "1:1", scheduler], check=True)
+        #subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "root", scheduler], check=True)
 
-    AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth1", prn=handleSniffedPacket).start()
+    AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth2", prn=handleSniffedPacket).start()
 
     c = ASTFClient()
     c.connect()
     c.reset()
-    c.load_profile(makeProfile())
+    c.load_profile(makeProfile(50011, 10000000, 10))
 
     c.clear_stats()
     c.start(mult = 1, duration = 15)
@@ -129,7 +136,7 @@ def runMeasurement(scheduler):
         throughputGauge.labels(scheduler=currentScheduler).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
 
         if scheduler != NO_SCHEDULER:
-            subprocess.run(["tc", "qdisc", "show", "dev", "veth2"], check=True)
+            subprocess.run(["tc", "qdisc", "show", "dev", "veth1"], check=True)
             prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO"}[scheduler] + "] Statistics: "
             msg = findInDMesg(prefix)[len(prefix):]
             for stat in msg.split(", "):
@@ -167,12 +174,13 @@ def runMeasurement(scheduler):
     packetDropCounter.clear()
 
     if scheduler != NO_SCHEDULER:
-        subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", scheduler], check=True)
+        subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1"], check=True)
+        #subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "root", scheduler], check=True)
 
 print("Removing leftover qdiscs")
-subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", "rifo"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", "pifo"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth2", "root", "sp_pifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo"])
 print("Done removing leftover qdiscs")
     
 runMeasurement(NO_SCHEDULER)
