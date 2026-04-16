@@ -26,6 +26,9 @@ SEC("classifier")
 int marker_func(struct __sk_buff *skb)
 {
     if (is_ip_packet(skb)) {        
+        if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr)) < 0)
+            return TC_ACT_OK;
+
         int32_t flow_length = get_flow_length(skb);
         __u16 rank = 0;
         if (flow_length != -1) {
@@ -66,7 +69,10 @@ int marker_func(struct __sk_buff *skb)
             }
 
             //bpf_printk("payloadlen: %d, ip len: %d, tcp header len: %d", payloadLen, bpf_htons(iph->tot_len), tcph->doff * 4);
-            bpf_printk("payloadlen: %d", payloadLen);
+            //bpf_printk("payloadlen: %d", payloadLen);
+            bpf_printk("flowid: %d, %d -> %d, %d\n", 
+                flowID.source_addr, flowID.source_port, 
+                flowID.dest_addr, flowID.dest_port);
 
             struct flow_data* flowData = bpf_map_lookup_elem(&flows, &flowID);
             if (!flowData) {

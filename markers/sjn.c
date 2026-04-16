@@ -3,7 +3,10 @@
 SEC("classifier")
 int marker_func(struct __sk_buff *skb)
 {
-    if (is_ip_packet(skb)) {
+    if (is_ip_packet(skb)) { 
+        if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr)) < 0)
+            return TC_ACT_OK;
+
         int32_t flow_length = get_flow_length(skb);
         __u16 rank = 0;
         if (flow_length != -1) {
@@ -11,6 +14,8 @@ int marker_func(struct __sk_buff *skb)
         }
 
 		//bpf_printk("rank: %d, flow length: %d", rank, flow_length);
+        //bpf_printk("packet size: %d, %d\n", (long)skb->data_end-(long)skb->data, skb->len);
+        //bpf_printk("dstp: %d\n", get_dest_port(skb));
 
 		set_rank(skb, rank);
     }

@@ -25,30 +25,29 @@ inline int32_t get_dest_port(struct __sk_buff *skb)
 {
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
-
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
 		if (data + sizeof(struct ethhdr) > data_end)
-			return -1;
+			return -2;
         struct iphdr *iph = (struct iphdr *)(data + sizeof(struct ethhdr));
 		if ((void *)(iph + 1) > data_end)
-			return -1;
+			return -3;
         uint32_t ihl = iph->ihl * 4;
 		if (((void *)iph) + ihl > data_end)
-			return -1;
+			return -4;
 
 		if (iph->protocol == IPPROTO_TCP) {
 			struct tcphdr *tcp = (struct tcphdr *)(((void *)iph) + ihl);
 			if ((void *)(tcp + 1) > data_end)
-				return -1;
+				return -5;
 			return bpf_htons(tcp->dest);
 		} else if(iph->protocol == IPPROTO_UDP) {
 			struct udphdr *udp = (struct udphdr *)(((void *)iph) + ihl);
 			if ((void *)(udp + 1) > data_end)
-				return -1;
+				return -6;
 			return bpf_htons(udp->dest);
 		}
 	}
-	return -1;
+	return -7;
 }
 
 static inline int32_t get_flow_length(struct __sk_buff *skb) {  
