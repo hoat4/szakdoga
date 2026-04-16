@@ -127,17 +127,30 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
         return NET_XMIT_SUCCESS;
     } else {
-        // PIFO paperben nem találtam semmit limitekről, így droppolásról sem.
+        skb_and_rank sOld;
+        // pop+push költséges művelet, ezért ha megegyezik a kettőnek a rankja,
+        // inkább bennhagyjuk a régit
+        bool dropOld = mmh_peek_max(&q->vars.depq, &sOld) && less_than(s, sOld);
 
         if (nonIP) {
-            pr_debug("[PIFO] Drop non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
+            pr_debug("[PIFO] Drop %s non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
+                dropOld ? "old" : "new",
                 sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
         } else {
-            pr_debug("[PIFO] Drop with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
+            pr_debug("[PIFO] Drop %s with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
+                dropOld ? "old" : "new",
                 rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
         }
-        q->stats.dropped_new_packet++;
-        return qdisc_drop(skb, sch, to_free);
+
+        if (dropOld) {
+            if (!mmh_pop_max(&q->vars.depq, &sOld))
+                panic("[PIFO] drop old failed");
+            q->stats.dropped_old_packet++;
+            return NET_XMIT_SUCCESS;
+        } else {
+            q->stats.dropped_new_packet++;
+            return qdisc_drop(skb, sch, to_free);
+        }
     }
 }
 
