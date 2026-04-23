@@ -67,5 +67,5 @@ def initScheduler(schedulerName, bandwidth, showIncomingPackets = False):
         exit()
             
     if len(sys.argv) == 1 or sys.argv[1] != "h2":
-        executeInMininet(schedulerName, bandwidth, showIncomingPackets)
+        executeInMininet(schedulerName + "_debug", bandwidth, showIncomingPackets)
         exit()
