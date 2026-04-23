@@ -34,6 +34,7 @@ struct pifo_stats {
     u64 latency_count;
     u64 dropped_new_packet;
     u64 dropped_old_packet;
+    u64 dropped_new_packet_because_dropping_old_was_not_enough;
 };
 
 struct pifo_vars {
@@ -67,98 +68,149 @@ static int pifo_init(struct Qdisc *sch, struct nlattr *arg,
     return 0;
 }
 
-static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
-			 struct sk_buff **to_free)
-{
-	struct pifo_sched_data *q = qdisc_priv(sch);
-	const struct iphdr *iph;
-	//u32 len = qdisc_pkt_len(skb);
-	//q->vars.bytes += len;
+void compute_rank(struct sk_buff* skb, bool* non_ip, u32* rank);
 
-    u32 rank = 0;
-    //pr_debug("micsoda: %d", skb_protocol(skb, true));
-    //pr_debug("skb 1: %p", skb);
-
-    /*
-	if (skb_protocol(skb, true) == htons(ETH_P_ARP)) {
-        struct arphdr* arphdr = arp_hdr(skb);
-        //pr_debug("arp op: %d", arphdr->ar_op);
-    }
-    */
-
-    bool nonIP = true;
+void compute_rank(struct sk_buff* skb, bool* non_ip, u32* rank) {
+    *non_ip = true;
 	if (skb_protocol(skb, true) == htons(ETH_P_IP)) {
-        iph = ip_hdr(skb);
+	    const struct iphdr *iph = ip_hdr(skb);
         //pr_warn("protocol: %d", iph->protocol);
     	if(iph != NULL) {
-            rank = ntohs(iph->id);
-            nonIP = false;
+            *rank = ntohs(iph->id);
+            *non_ip = false;
         }
     }
+    if (*non_ip) {
+        *rank = 0;
+    }
+}
 
-    // TODO mi legyen ha túl rövid? megtelik a queue
+bool try_enqueue(struct Qdisc *sch, struct pifo_sched_data *q, skb_and_rank s);
 
-
-    skb_and_rank s = {
-        .skb = skb, 
-        .rank = rank, 
-        .order = q->vars.packetCounter++
-    };
-    
-    //pr_debug("push %p, %p", q->vars.depq.data, s);
-    if (sch->qstats.backlog + qdisc_pkt_len(skb) <= q->params.limit &&
+bool try_enqueue(struct Qdisc *sch, struct pifo_sched_data *q, skb_and_rank s) {
+    if (sch->qstats.backlog + qdisc_pkt_len(s.skb) <= q->params.limit &&
             mmh_insert(&q->vars.depq, s)) {
-        sch->qstats.backlog += qdisc_pkt_len(skb);
+        sch->qstats.backlog += qdisc_pkt_len(s.skb);
         sch->q.qlen++; // sch_htb enélkül nem megy
         // sch_api.c-ben írják is:
         // "For complicated disciplines with multiple queues q->q is not
         //  real packet queue, but however q->q.qlen must be valid."
 
-        if (nonIP) {
-            pr_debug("[PIFO] Enqueue non-IP (used bytes: %d/%d)", sch->qstats.backlog, q->params.limit);
-        } else {
-	        pr_debug("[PIFO] Enqueue rank %d (used bytes: %d/%d)", rank, sch->qstats.backlog, q->params.limit);
-        }
-
-        if (skb->tstamp == 0)
-            skb->tstamp = ktime_get();
-        else
-            printk(KERN_WARNING "[PIFO] skb->tstamp already used, latency statistics will be wrong");
-
-        return NET_XMIT_SUCCESS;
-    } else {
-        skb_and_rank sOld;
-        // pop+push költséges művelet, ezért ha megegyezik a kettőnek a rankja,
-        // inkább bennhagyjuk a régit
-        bool dropOld = mmh_peek_max(&q->vars.depq, &sOld) && less_than(s, sOld);
-
-        if (nonIP) {
-            pr_debug("[PIFO] Drop %s non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
-                dropOld ? "old" : "new",
+        if (s.non_ip) {
+            pr_debug("[PIFO] Enqueued non-IP (used bytes: %d/%d, used packets: %d/%d)", 
                 sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
         } else {
-            pr_debug("[PIFO] Drop %s with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
-                dropOld ? "old" : "new",
-                rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+	        pr_debug("[PIFO] Enqueued rank %d (used bytes: %d/%d, used packets: %d/%d)", 
+                s.rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
         }
 
-        if (dropOld) {
-            if (!mmh_pop_max(&q->vars.depq, &sOld))
-                panic("[PIFO] drop old failed");
+        if (s.skb->tstamp == 0)
+            s.skb->tstamp = ktime_get();
+        else
+            printk(KERN_WARNING "[PIFO] skb->tstamp already used, latency statistics will be wrong");
+        return true;
+    } else {
+        return false;
+    }
+}
+
+static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
+			 struct sk_buff **to_free)
+{
+	struct pifo_sched_data *q = qdisc_priv(sch);
+	//u32 len = qdisc_pkt_len(skb);
+	//q->vars.bytes += len;
+
+    u32 rank;
+    bool nonIP;
+    compute_rank(skb, &nonIP, &rank);
+
+    skb_and_rank s = {
+        .skb = skb, 
+        .rank = rank, 
+        .non_ip = nonIP,
+        .order = q->vars.packetCounter++
+    };
+    
+    //pr_debug("push %p, %p", q->vars.depq.data, s);
+    if (try_enqueue(sch, q, s)) {
+        return NET_XMIT_SUCCESS;
+    } 
+
+    skb_and_rank sOld;
+
+    bool dropOldWasNotEnough = false;
+
+    // pop+push költséges művelet, ezért ha megegyezik a kettőnek a rankja,
+    // inkább bennhagyjuk a régit
+    if (mmh_peek_max(&q->vars.depq, &sOld) && less_than(s, sOld)) {
+        // drop old
+
+        if (nonIP) {
+            if (sOld.non_ip) {
+                pr_debug("[PIFO] Drop old non-IP packet to make space for non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
+                    sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+            } else {
+                pr_debug("[PIFO] Drop old packet with rank %d to make space for non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
+                    sOld.rank,
+                    sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+            }
+        } else {
+            if (sOld.non_ip) {
+                pr_debug("[PIFO] Drop old non-IP packet to make space for packet with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
+                    rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+            } else {
+                pr_debug("[PIFO] Drop old packet with rank %d to make space for packet with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
+                    sOld.rank,
+                    rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+            }
+        }
+
+        if (!mmh_pop_max(&q->vars.depq, &sOld))
+            panic("[PIFO] drop old failed");
+        sch->q.qlen--; // sch_htb enélkül nem megy
+        sch->qstats.backlog -= qdisc_pkt_len(sOld.skb);
+
+        if (try_enqueue(sch, q, s)) {
             q->stats.dropped_old_packet++;
+            qdisc_drop(sOld.skb, sch, to_free);
             return NET_XMIT_SUCCESS;
         } else {
-            q->stats.dropped_new_packet++;
-            return qdisc_drop(skb, sch, to_free);
+            if (!try_enqueue(sch, q, sOld)) {
+                panic("[PIFO] Failed to push back after drop old was not enough");
+            }
+            dropOldWasNotEnough = true;
+            q->stats.dropped_new_packet_because_dropping_old_was_not_enough++;
         }
+    } else {
+        q->stats.dropped_new_packet++;
     }
+
+    // drop new
+    if (nonIP) {
+        pr_debug("[PIFO] Drop new non-IP packet %s(used bytes: %d/%d, used packets: %d/%d)", 
+            dropOldWasNotEnough ? "because dropping old was not enough " : "",
+            sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+    } else {
+        pr_debug("[PIFO] Drop new with rank %d %s(used bytes: %d/%d, used packets: %d/%d)", 
+            rank, 
+            dropOldWasNotEnough ? "because dropping old was not enough " : "",
+            sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+    }
+
+    return qdisc_drop(skb, sch, to_free);
 }
 
 //if (skb_protocol(skb, true) != htons(ETH_P_IP))
 static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
 {
     pr_debug("[PIFO] dequeue begin");
+
 	struct pifo_sched_data *q = qdisc_priv(sch);
+
+    if (q->vars.depq.count != sch->q.qlen)
+        printk(KERN_ERR "q->vars.depq.count != sch->q.qlen: %d vs %d", q->vars.depq.count, sch->q.qlen);
+
     skb_and_rank s;
     if (mmh_pop_min(&q->vars.depq, &s)) {
         //pr_debug("deq success (%d elements)", q->vars.depq.count);
@@ -184,7 +236,6 @@ static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
         q->stats.latency_sum += latency;
         q->stats.latency_count++;
         pr_debug("[PIFO] dequeue latency %lld", latency);
-        skb->tstamp = 0;
 
         return skb;
     } else {
@@ -228,6 +279,7 @@ static void pifo_reset(struct Qdisc *sch)
     q->stats.latency_count = 0;
     q->stats.dropped_new_packet = 0;
     q->stats.dropped_old_packet = 0;
+    q->stats.dropped_new_packet_because_dropping_old_was_not_enough = 0;
 }
 
 
@@ -247,10 +299,11 @@ static void pifo_destroy(struct Qdisc *sch)
 static int pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 {
     struct pifo_sched_data *q = qdisc_priv(sch);
-    printk(KERN_INFO "[PIFO] Statistics: latency: %llu / %llu = %llu, drop old: %llu, drop new: %llu", 
+    printk(KERN_INFO "[PIFO] Statistics: latency: %llu / %llu = %llu, drop old: %llu, drop new: %llu, drop new because drop old was not enough: %llu", 
         q->stats.latency_sum, q->stats.latency_count, 
         q->stats.latency_sum / (q->stats.latency_count == 0 ? 1 : q->stats.latency_count), 
-        q->stats.dropped_old_packet, q->stats.dropped_new_packet);
+        q->stats.dropped_old_packet, q->stats.dropped_new_packet, 
+        q->stats.dropped_new_packet_because_dropping_old_was_not_enough);
     q->stats.latency_sum = 0;
     q->stats.latency_count = 0;
 	return -1;

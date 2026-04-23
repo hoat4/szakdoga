@@ -6,6 +6,7 @@
 typedef struct skb_and_rank {
     struct sk_buff* skb;
     u32 rank;
+    bool non_ip; // ha ez true, akkor rank legyen 0
     u64 order; // ld. pifo_sched_data.packetCounter
 } skb_and_rank;
 

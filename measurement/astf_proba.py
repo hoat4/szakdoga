@@ -12,7 +12,7 @@ throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes
 ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", ["scheduler"])
 opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", ["scheduler"])
 flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time", ["scheduler"], 
-                                        buckets = floatRange(0.25, 1, 20))
+                                        buckets = floatRange(1, 5, 20))
 latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", ["scheduler"])
 packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", ["scheduler", "dropReason"])
 
@@ -150,8 +150,10 @@ def runMeasurement(scheduler):
                     "latency": latencyGauge.labels(scheduler = currentScheduler),
                     "drop because full": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "queueFull"),
                     "drop because priority too low": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "priorityTooLow"), 
-                    "drop old": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropOld"),
-                    "drop new": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNew")
+                    "drop old": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropOld (PIFO)"),
+                    "drop new": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNew (PIFO)"),
+                    "drop new because drop old was not enough": 
+                        packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNewBecauseDropOldNotEnough (PIFO)"),
                 }[statName]
                 counter.set(statVal)
 

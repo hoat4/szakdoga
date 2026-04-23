@@ -10,8 +10,10 @@ for i in range(0, 25):
 
 sendWithRank(7, 500)
 sendWithRank(3, 500)
+sendWithRank(4, 1001)
 
 time.sleep(1)
 
-# dmesg-ben azt kell látni, hogy a végén a 7-es és 3-as rankú packetet is droppolja
-# (meg előtte néhány 5-öset)
+# dmesg-ben azt kell látni, hogy a végén a 7-esre azt írja hogy Drop new, majd
+# a 3-asra Drop old, végül 4-esre Drop new because dropping old was not enough
+# (meg előtte néhány 5-öset is droppol)
