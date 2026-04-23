@@ -42,6 +42,9 @@ def executeInMininet(schedulerName, bandwidth, showIncomingPackets):
         while h1.waiting:
             if not h1.waitReadable(100):
                 break
+
+            #subprocess.run(["tc", "qdisc", "show", "dev", "s1-eth1"], check=True)
+
             print(h1.monitor())
 
     net.stop()

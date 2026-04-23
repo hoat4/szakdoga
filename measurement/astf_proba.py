@@ -14,6 +14,7 @@ opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", ["scheduler"])
 flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time", ["scheduler"], 
                                         buckets = floatRange(1, 5, 20))
 latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", ["scheduler"])
+queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", ["scheduler"])
 packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", ["scheduler", "dropReason"])
 
 start_http_server(18001)
@@ -141,13 +142,18 @@ def runMeasurement(scheduler):
             msg = findInDMesg(prefix)[len(prefix):]
             for stat in msg.split(", "):
                 [statName, statVal] = stat.split(": ")
-                if statName == "latency":
+                if statName == "latency": 
                     statVal = statVal.split(" = ")[1]
-                statVal = float(statVal)
+                if statName == "queue usage":
+                    [packetsInQueue, queueSize] = statVal.split(" / ")
+                    statVal = float(packetsInQueue) / float(queueSize)
+                else:
+                    statVal = float(statVal)
                 if statName == "latency":
                     statVal = statVal / 1000000 # ns -> ms
                 counter = {
                     "latency": latencyGauge.labels(scheduler = currentScheduler),
+                    "queue usage": queueUsage.labels(scheduler = currentScheduler),
                     "drop because full": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "queueFull"),
                     "drop because priority too low": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "priorityTooLow"), 
                     "drop old": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropOld (PIFO)"),

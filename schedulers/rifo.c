@@ -38,10 +38,6 @@ struct rifo_params {
 };
 
 struct rifo_stats {
-	u32 ecn_marked;
-	u32 tail_drop;
-	u32 ctv_drop;
-
     u64 latency_sum;
     u64 latency_count;
     u64 drop_because_priority_too_low;
@@ -161,7 +157,6 @@ static struct sk_buff *rifo_dequeue(struct Qdisc *sch)
         q->stats.latency_sum += latency;
         q->stats.latency_count++;
         pr_debug("[RIFO] dequeue latency %lld", latency);
-        skb->tstamp = 0;
     } else {
         pr_debug("[RIFO] No packet to be dequeued");
     }
@@ -190,9 +185,10 @@ static void rifo_reset(struct Qdisc *sch)
 static int rifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 {
 	struct rifo_sched_data *q = qdisc_priv(sch);
-    printk(KERN_INFO "[RIFO] Statistics: latency: %llu / %llu = %llu, drop because full: %llu, drop because priority too low: %llu", 
+    printk(KERN_INFO "[RIFO] Statistics: latency: %llu / %llu = %llu, queue usage: %u / %u, drop because full: %llu, drop because priority too low: %llu", 
         q->stats.latency_sum, q->stats.latency_count, 
         q->stats.latency_sum / (q->stats.latency_count == 0 ? 1 : q->stats.latency_count), 
+        sch->qstats.backlog, RIFO_QUEUE_LENGTH, 
         q->stats.drop_because_queue_full, q->stats.drop_because_priority_too_low);
     q->stats.latency_sum = 0;
     q->stats.latency_count = 0;

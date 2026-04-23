@@ -299,9 +299,10 @@ static void pifo_destroy(struct Qdisc *sch)
 static int pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 {
     struct pifo_sched_data *q = qdisc_priv(sch);
-    printk(KERN_INFO "[PIFO] Statistics: latency: %llu / %llu = %llu, drop old: %llu, drop new: %llu, drop new because drop old was not enough: %llu", 
+    printk(KERN_INFO "[PIFO] Statistics: latency: %llu / %llu = %llu, queue usage: %u / %u, drop old: %llu, drop new: %llu, drop new because drop old was not enough: %llu", 
         q->stats.latency_sum, q->stats.latency_count, 
         q->stats.latency_sum / (q->stats.latency_count == 0 ? 1 : q->stats.latency_count), 
+        sch->qstats.backlog, PIFO_QUEUE_LENGTH_BYTES, 
         q->stats.dropped_old_packet, q->stats.dropped_new_packet, 
         q->stats.dropped_new_packet_because_dropping_old_was_not_enough);
     q->stats.latency_sum = 0;
