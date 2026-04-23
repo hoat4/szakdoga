@@ -26,7 +26,7 @@ SEC("classifier")
 int marker_func(struct __sk_buff *skb)
 {
     if (is_ip_packet(skb)) {        
-        if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr)) < 0)
+        if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr)) < 0)
             return TC_ACT_OK;
 
         int32_t flow_length = get_flow_length(skb);
