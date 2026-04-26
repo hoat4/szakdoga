@@ -1,7 +1,8 @@
 from trex.astf.api import *
-from prometheus_client import start_http_server, Gauge, Histogram, Counter
+from prometheus_client import start_http_server, Gauge, Histogram, Counter, Summary
 import time
 import subprocess
+import re
 from scapy.all import *
 from scapy.sendrecv import AsyncSniffer
 
@@ -11,8 +12,7 @@ def floatRange(begin, end, divisions):
 throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", ["scheduler"])
 ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", ["scheduler"])
 opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", ["scheduler"])
-flowCompletionTimeHistogram = Histogram('vacak_flow_completion_time', "flow completion time", ["scheduler"], 
-                                        buckets = floatRange(1, 5, 20))
+flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", ["scheduler"])
 latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", ["scheduler"])
 queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", ["scheduler"])
 packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", ["scheduler", "dropReason"])
@@ -27,7 +27,7 @@ def makeProfile(port, flowSize, cps):
         prog_c.send(b'x' * flowSize)
     else:
         if int(flowSize) != flowSize:
-            raise "larger than 1MB but not dividable by 1MB: " + str(flowSize)
+            raise Exception("larger than 1MB but not dividable by 1MB: " + str(flowSize))
         prog_c.set_var("var2", int(flowSize / 1_000_000));
         prog_c.set_label("a:");
         prog_c.send(b'x' * 1_000_000)
@@ -84,9 +84,9 @@ def handleSniffedPacket(packet):
             flowCompletionTime = now-beginTime
             print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
                   " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
-            flowCompletionTimeHistogram.labels(scheduler=currentScheduler).observe(flowCompletionTime)
+            flowCompletionTimeSummary.labels(scheduler=currentScheduler).observe(flowCompletionTime)
         case _:
-            raise "unknown TCP flags: " + packet.summary()
+            raise Exception("unknown TCP flags: " + packet.summary())
 
 def findInDMesg(prefix):
     process = subprocess.run(
@@ -108,17 +108,21 @@ def findInDMesg(prefix):
             else:
                 foundOne = True
       
-    raise "no line found in dmesg starting with \"" + prefix + "\""
+    raise Exception("no line found in dmesg starting with \"" + prefix + "\"")
 
-NO_SCHEDULER = "none"
+BFIFO_QUEUE_SIZE=100000
+
 def runMeasurement(scheduler):
     global currentScheduler
     print("Begin with scheduler: " + scheduler)
     currentScheduler = scheduler
 
-    if scheduler != NO_SCHEDULER:
-        subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "parent", "1:1", scheduler], check=True)
-        #subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "root", scheduler], check=True)
+    addQdiscCmd = ["tc", "qdisc", "add", "dev", "veth1", "parent", "1:1", scheduler]
+    if scheduler == "bfifo":
+        addQdiscCmd.extend(["limit", str(BFIFO_QUEUE_SIZE)])
+
+    subprocess.run(addQdiscCmd, check=True)
+    #subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "root", scheduler], check=True)
 
     AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth2", prn=handleSniffedPacket).start()
 
@@ -128,7 +132,7 @@ def runMeasurement(scheduler):
     c.load_profile(makeProfile(50011, 10000000, 10))
 
     c.clear_stats()
-    c.start(mult = 1, duration = 15)
+    c.start(mult = 1, duration = 10)
 
     while c.get_active_ports():
         stats = c.get_stats()
@@ -136,9 +140,10 @@ def runMeasurement(scheduler):
         opacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['opackets'])
         throughputGauge.labels(scheduler=currentScheduler).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
 
-        if scheduler != NO_SCHEDULER:
+        if scheduler != "bfifo":
             subprocess.run(["tc", "qdisc", "show", "dev", "veth1"], check=True)
-            prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO"}[scheduler] + "] Statistics: "
+            prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO", 
+                            "rifo_debug": "RIFO", "pifo_debug": "PIFO", "sp_pifo_debug": "SP-PIFO"}[scheduler] + "] Statistics: "
             msg = findInDMesg(prefix)[len(prefix):]
             for stat in msg.split(", "):
                 [statName, statVal] = stat.split(": ")
@@ -162,6 +167,17 @@ def runMeasurement(scheduler):
                         packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNewBecauseDropOldNotEnough (PIFO)"),
                 }[statName]
                 counter.set(statVal)
+        else:
+            # natív qdisc
+            
+            output = subprocess.check_output(["tc", "-s", "qdisc", "show", "dev", "veth1", "parent", "1:1"], text=True)
+            for line in output.splitlines():
+                match = re.search(r'backlog (\d+)b (\d+)p', line) # pl.: backlog 1514b 1p requeues 0
+                if match:
+                    queueUsage.labels(scheduler = currentScheduler).set(float(match.group(1)) / float(BFIFO_QUEUE_SIZE))
+                match = re.search(r'dropped (\d+)', line) # pl.: Sent 410142438 bytes 273799 pkt (dropped 3243, overlimits 0 requeues 0)
+                if match:
+                    packetDropCounter.labels(scheduler = currentScheduler, dropReason = "queueFull").set(int(match.group(1)))
 
         time.sleep(0.01)
 
@@ -177,21 +193,25 @@ def runMeasurement(scheduler):
     ipacketsGauge.clear()
     opacketsGauge.clear()
     throughputGauge.clear()
-    flowCompletionTimeHistogram.clear()
+    flowCompletionTimeSummary.clear()
     latencyGauge.clear()
     packetDropCounter.clear()
 
-    if scheduler != NO_SCHEDULER:
-        subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1"], check=True)
-        #subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "root", scheduler], check=True)
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1"], check=True)
+    #subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "root", scheduler], check=True)
 
 print("Removing leftover qdiscs")
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "bfifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pfifo_fast"])
 subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo"])
 subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo"])
 subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo_debug"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo_debug"])
+subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo_debug"])
 print("Done removing leftover qdiscs")
     
-runMeasurement(NO_SCHEDULER)
+runMeasurement("bfifo")
 runMeasurement("rifo")
-runMeasurement("pifo")
-runMeasurement("sp_pifo")
+#runMeasurement("pifo")
+#runMeasurement("sp_pifo")
