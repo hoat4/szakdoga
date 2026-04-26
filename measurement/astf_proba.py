@@ -9,13 +9,14 @@ from scapy.sendrecv import AsyncSniffer
 def floatRange(begin, end, divisions):
     return [begin + (end - begin) * x / divisions for x in range(1, divisions + 1)]
 
-throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", ["scheduler"])
-ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", ["scheduler"])
-opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", ["scheduler"])
-flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", ["scheduler"])
-latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", ["scheduler"])
-queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", ["scheduler"])
-packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", ["scheduler", "dropReason"])
+labelNames = ["scheduler", "marker"]
+throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", labelNames)
+ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", labelNames)
+opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", labelNames)
+flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", labelNames)
+latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", labelNames)
+queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", labelNames)
+packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", labelNames + ["dropReason"])
 
 start_http_server(18001)
 
@@ -64,6 +65,7 @@ def makeProfile(port, flowSize, cps):
     )
 
 global currentScheduler
+global currentMarker
 
 connectionBegins = {}
 def handleSniffedPacket(packet):
@@ -84,7 +86,7 @@ def handleSniffedPacket(packet):
             flowCompletionTime = now-beginTime
             print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
                   " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
-            flowCompletionTimeSummary.labels(scheduler=currentScheduler).observe(flowCompletionTime)
+            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker).observe(flowCompletionTime)
         case _:
             raise Exception("unknown TCP flags: " + packet.summary())
 
@@ -112,17 +114,26 @@ def findInDMesg(prefix):
 
 BFIFO_QUEUE_SIZE=100000
 
-def runMeasurement(scheduler):
+def runMeasurement(scheduler, marker):
     global currentScheduler
+    global currentMarker
+
     print("Begin with scheduler: " + scheduler)
-    currentScheduler = scheduler
+    currentScheduler = {
+        "bfifo": "FIFO",
+        "rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO", 
+        "rifo_debug": "RIFO (debug)", "pifo_debug": "PIFO (debug)", "sp_pifo_debug": "SP-PIFO (debug)", 
+    }[scheduler]
+    currentMarker = marker if marker else "none"
 
     addQdiscCmd = ["tc", "qdisc", "add", "dev", "veth1", "parent", "1:1", scheduler]
     if scheduler == "bfifo":
         addQdiscCmd.extend(["limit", str(BFIFO_QUEUE_SIZE)])
-
     subprocess.run(addQdiscCmd, check=True)
     #subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "root", scheduler], check=True)
+
+    if marker:
+        subprocess.run(["tc", "filter", "add", "dev", "veth1", "egress", "bpf", "da", "obj", marker + ".o"], check=True)
 
     AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth2", prn=handleSniffedPacket).start()
 
@@ -136,9 +147,9 @@ def runMeasurement(scheduler):
 
     while c.get_active_ports():
         stats = c.get_stats()
-        ipacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['ipackets'])
-        opacketsGauge.labels(scheduler=currentScheduler).set(stats['total']['opackets'])
-        throughputGauge.labels(scheduler=currentScheduler).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
+        ipacketsGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['total']['ipackets'])
+        opacketsGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['total']['opackets'])
+        throughputGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
 
         if scheduler != "bfifo":
             subprocess.run(["tc", "qdisc", "show", "dev", "veth1"], check=True)
@@ -157,27 +168,27 @@ def runMeasurement(scheduler):
                 if statName == "latency":
                     statVal = statVal / 1000000 # ns -> ms
                 counter = {
-                    "latency": latencyGauge.labels(scheduler = currentScheduler),
-                    "queue usage": queueUsage.labels(scheduler = currentScheduler),
-                    "drop because full": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "queueFull"),
-                    "drop because priority too low": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "priorityTooLow"), 
-                    "drop old": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropOld (PIFO)"),
-                    "drop new": packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNew (PIFO)"),
+                    "latency": latencyGauge.labels(scheduler = currentScheduler, marker = currentMarker),
+                    "queue usage": queueUsage.labels(scheduler = currentScheduler, marker = currentMarker),
+                    "drop because full": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull"),
+                    "drop because priority too low": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "priorityTooLow"), 
+                    "drop old": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropOld"),
+                    "drop new": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropNew"),
                     "drop new because drop old was not enough": 
-                        packetDropCounter.labels(scheduler = currentScheduler, dropReason = "dropNewBecauseDropOldNotEnough (PIFO)"),
+                        packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropNewBecauseDropOldNotEnough"),
                 }[statName]
                 counter.set(statVal)
         else:
             # natív qdisc
-            
+
             output = subprocess.check_output(["tc", "-s", "qdisc", "show", "dev", "veth1", "parent", "1:1"], text=True)
             for line in output.splitlines():
                 match = re.search(r'backlog (\d+)b (\d+)p', line) # pl.: backlog 1514b 1p requeues 0
                 if match:
-                    queueUsage.labels(scheduler = currentScheduler).set(float(match.group(1)) / float(BFIFO_QUEUE_SIZE))
+                    queueUsage.labels(scheduler = currentScheduler, marker = currentMarker).set(float(match.group(1)) / float(BFIFO_QUEUE_SIZE))
                 match = re.search(r'dropped (\d+)', line) # pl.: Sent 410142438 bytes 273799 pkt (dropped 3243, overlimits 0 requeues 0)
                 if match:
-                    packetDropCounter.labels(scheduler = currentScheduler, dropReason = "queueFull").set(int(match.group(1)))
+                    packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull").set(int(match.group(1)))
 
         time.sleep(0.01)
 
@@ -198,6 +209,8 @@ def runMeasurement(scheduler):
     packetDropCounter.clear()
 
     subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1"], check=True)
+    if marker:
+        subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True)
     #subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "root", scheduler], check=True)
 
 print("Removing leftover qdiscs")
@@ -210,8 +223,16 @@ subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo_deb
 subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo_debug"])
 subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo_debug"])
 print("Done removing leftover qdiscs")
+print("Removing leftover qdiscs")
+subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
     
-runMeasurement("bfifo")
-runMeasurement("rifo")
-#runMeasurement("pifo")
-#runMeasurement("sp_pifo")
+runMeasurement("bfifo", None)
+runMeasurement("rifo", None)
+runMeasurement("pifo", None)
+runMeasurement("sp_pifo", None)
+runMeasurement("rifo", "sjn")
+runMeasurement("pifo", "sjn")
+runMeasurement("sp_pifo", "sjn")
+runMeasurement("rifo", "srtf")
+runMeasurement("pifo", "srtf")
+runMeasurement("sp_pifo", "srtf")
