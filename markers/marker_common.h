@@ -81,7 +81,7 @@ static inline void set_rank(struct __sk_buff *skb, __u16 rank) {
     /* put the rank into the id field if the IPv4 */
     int ret = bpf_skb_store_bytes(skb, IP_OFF + offsetof(struct iphdr, id), &rank_to_mark, 2, 0);
     if(ret < 0)
-        bpf_printk("bpf_skb_store_bytes vacak");
+        bpf_printk("bpf_skb_store_bytes failed, can't store rank");
 }
 
 // https://stackoverflow.com/questions/65986056/is-there-a-non-looping-unsigned-32-bit-integer-square-root-function-c

@@ -3,6 +3,9 @@
 #include <linux/udp.h>
 #include <linux/ip.h>
 
+// minden packetnél kiírja hogy mennyi a flowsize, remaining bytes, rank
+#define SRTF_VERBOSE 0
+
 struct flow_id {
     __u32 source_addr;
     __u32 source_port;
@@ -11,8 +14,13 @@ struct flow_id {
 };
 
 struct flow_data {
-    __u32 length;
+    bool is_tcp;
+
+    // UDP:
     __u32 sent_bytes;
+
+    // TCP:
+    __u32 initial_sequence_number;
 };
 
 struct {
@@ -28,13 +36,39 @@ int marker_func(struct __sk_buff *skb)
     if (is_ip_packet(skb)) {        
         if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr)) < 0)
             return TC_ACT_OK;
+       
+        void *data = (void *)(long)skb->data;
+        struct iphdr *iph = (struct iphdr *)(data + sizeof(struct ethhdr));
+       
+        void *data_end = (void *)(long)skb->data_end;
 
+        if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end) {
+            bpf_printk("no full IP packet header (1)");
+            return TC_ACT_OK;
+        }
+
+        if (iph->protocol == IPPROTO_TCP) {
+            uint32_t ihl_in_bytes = iph->ihl * 4;
+            if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + ihl_in_bytes + sizeof(struct tcphdr)) < 0) {
+                bpf_printk("failed to pull TCP header");
+                return TC_ACT_OK;
+            }
+        }
+
+        //bpf_printk("dstport %d\n", get_dest_port(skb));
         int32_t flow_length = get_flow_length(skb);
         __u16 rank = 0;
         if (flow_length != -1) {
-            void *data_end = (void *)(long)skb->data_end;
-            void *data = (void *)(long)skb->data;
-            struct iphdr *iph = (struct iphdr *)(data + sizeof(struct ethhdr));
+            // lehet hogy bpf_skb_pull_data által megváltozott
+            data = (void *)(long)skb->data;
+            iph = (struct iphdr *)(data + sizeof(struct ethhdr));
+            data_end = (void *)(long)skb->data_end;
+
+            if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end) {
+                bpf_printk("no full IP packet header (2)");
+                return TC_ACT_OK;
+            }
+
             uint32_t ihl = iph->ihl * 4;
             // portok TCP és UDP packetek esetén is ugyanott vannak
             struct tcphdr * tcph = (struct tcphdr *)(((void*)iph) + ihl); 
@@ -70,18 +104,29 @@ int marker_func(struct __sk_buff *skb)
 
             //bpf_printk("payloadlen: %d, ip len: %d, tcp header len: %d", payloadLen, bpf_htons(iph->tot_len), tcph->doff * 4);
             //bpf_printk("payloadlen: %d", payloadLen);
-            bpf_printk("flowid: %d, %d -> %d, %d\n", 
-                flowID.source_addr, flowID.source_port, 
-                flowID.dest_addr, flowID.dest_port);
+            //bpf_printk("flowid: %d, %d -> %d, %d\n", 
+            //    flowID.source_addr, flowID.source_port, 
+            //    flowID.dest_addr, flowID.dest_port);
 
             struct flow_data* flowData = bpf_map_lookup_elem(&flows, &flowID);
             if (!flowData) {
+                bool is_tcp = false;
+                __u32 initial_sequence_number = 0;
+
+                if (iph->protocol == IPPROTO_TCP && (void*) (&tcph->window /* doff */) <= data_end) {
+                    initial_sequence_number = bpf_ntohl(tcph->seq);
+                    is_tcp = true;
+                }
+
                 struct flow_data newFlowData = { 
-                    .length = (__u32) flow_length,
-                    .sent_bytes = 0
+                    .initial_sequence_number = initial_sequence_number,
+                    .sent_bytes = 0, 
+                    .is_tcp = is_tcp
                 };
 
-                bpf_map_update_elem(&flows, &flowID, &newFlowData, BPF_NOEXIST);
+                if (!bpf_map_update_elem(&flows, &flowID, &newFlowData, BPF_NOEXIST)) {
+                    bpf_printk("bpf_map_update_elem failed");
+                }
                 flowData = bpf_map_lookup_elem(&flows, &flowID);
                 if (!flowData) {
                     // ez akkor lehet, ha kikerült a hashmapből az update és lookup hívás között, 
@@ -91,18 +136,43 @@ int marker_func(struct __sk_buff *skb)
                 }
             }
             
-            int32_t remainingBytes = ((int32_t)flowData->length) - ((int32_t)flowData->sent_bytes);
-            bpf_printk("remaining bytes: %d - %d = %d", flowData->length, flowData->sent_bytes, remainingBytes);
+            int32_t sent_bytes;
+
+            if (flowData->is_tcp) {
+		        //bpf_printk("flow is tcp");
+                if (iph->protocol == IPPROTO_TCP && (void*) (&tcph->window /* doff */) <= data_end) {
+                    // ez így nem pontos, mert pl. a SYN is asszem 1-gyel növeli a sequence numbert, de nem baj ha csak kicsit pontatlan
+                    sent_bytes = bpf_ntohl(tcph->seq) - flowData->initial_sequence_number;
+    		        //bpf_printk("seq is %d", tcph->seq);
+    		        //bpf_printk("sent_bytes %d", sent_bytes);
+                } else {
+                    sent_bytes = 0;
+                    //bpf_printk("was TCP but currently not");
+                }
+            } else {
+		        //bpf_printk("flow is udp");
+                sent_bytes = (int32_t) flowData->sent_bytes;
+            }
+
+            int32_t remainingBytes = flow_length - sent_bytes;
             if (remainingBytes < 0) {
                 rank = 0;
             } else {
                 rank = (__u16) isqrt32(remainingBytes); // sqrt azért kell, hogy hogy beleférjen u16-ba
             }    
 
-            __sync_fetch_and_add(&flowData->sent_bytes, payloadLen);
+            if (SRTF_VERBOSE)
+                bpf_printk("[SRTF] %d:%d->%d:%d Remaining bytes: %d - %d = %d; rank = %d", 
+                    bpf_ntohl(flowID.source_addr), bpf_ntohs(flowID.source_port), 
+                    bpf_ntohl(flowID.dest_addr), bpf_ntohs(flowID.dest_port), 
+                    flow_length, sent_bytes, remainingBytes, 
+                    rank);
+            
+            if (!flowData->is_tcp)
+                __sync_fetch_and_add(&flowData->sent_bytes, payloadLen);
         }
         
-		bpf_printk("rank: %d", rank);
+		//bpf_printk("rank: %d", rank);
 
         set_rank(skb, rank);
     }
