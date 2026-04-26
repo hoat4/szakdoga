@@ -114,7 +114,7 @@ def findInDMesg(prefix):
 
 BFIFO_QUEUE_SIZE=100000
 
-def runMeasurement(scheduler, marker):
+def runMeasurement(scheduler, marker, astfProfile):
     global currentScheduler
     global currentMarker
 
@@ -140,7 +140,7 @@ def runMeasurement(scheduler, marker):
     c = ASTFClient()
     c.connect()
     c.reset()
-    c.load_profile(makeProfile(50011, 10000000, 10))
+    c.load_profile(astfProfile)
 
     c.clear_stats()
     c.start(mult = 1, duration = 10)
@@ -213,26 +213,16 @@ def runMeasurement(scheduler, marker):
         subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True)
     #subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "root", scheduler], check=True)
 
-print("Removing leftover qdiscs")
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "bfifo"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pfifo_fast"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo_debug"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo_debug"])
-subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo_debug"])
-print("Done removing leftover qdiscs")
-print("Removing leftover qdiscs")
-subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
-    
-runMeasurement("bfifo", None)
-runMeasurement("rifo", None)
-runMeasurement("pifo", None)
-runMeasurement("sp_pifo", None)
-runMeasurement("rifo", "sjn")
-runMeasurement("pifo", "sjn")
-runMeasurement("sp_pifo", "sjn")
-runMeasurement("rifo", "srtf")
-runMeasurement("pifo", "srtf")
-runMeasurement("sp_pifo", "srtf")
+def resetInterface():
+    print("Removing leftover qdiscs")
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "bfifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pfifo_fast"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo_debug"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo_debug"])
+    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo_debug"])
+    print("Done removing leftover qdiscs")
+    print("Removing leftover qdiscs")
+    subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
