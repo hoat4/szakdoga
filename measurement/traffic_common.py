@@ -22,14 +22,13 @@ flowBeginCounter = Counter("vacak_connection_opens", "Megnyitott TCP kapcsolatok
 start_http_server(18001)
 
 ip_gen = ASTFIPGen(
-    dist_client=ASTFIPGenDist(ip_range=["2.2.2.2", "2.2.2.2"]),
+    dist_client=ASTFIPGenDist(ip_range=["2.2.2.1", "2.2.2.255"]),
     dist_server=ASTFIPGenDist(ip_range=["1.1.1.1", "1.1.1.1"])
 )
 
 def makeASTFTemplate(port, flowSize, cps):
     # client program
     prog_c = ASTFProgram()
-    prog_c.connect()
     if flowSize <= 1_000_000:
         prog_c.send(b'x' * flowSize)
     else:
@@ -42,9 +41,6 @@ def makeASTFTemplate(port, flowSize, cps):
 
     # Server program
     prog_s = ASTFProgram()
-    prog_s.accept()
-
-    # Receive from client
     prog_s.recv(flowSize)
 
     return ASTFTemplate(
@@ -73,7 +69,7 @@ def handleSniffedPacket(packet):
     global connectionBeginCount
     global connectionBeginNotDetected
 
-    if packet[IP].src != "2.2.2.2":
+    if not packet[IP].src.startswith("2."):
         return
     #print(packet.summary())
     now = time.monotonic()
@@ -121,11 +117,17 @@ def findInDMesg(prefix):
 
 BFIFO_QUEUE_SIZE=100000
 
+txInterfaceName = "veth1"
+txInterfaceQDiscClass = ["parent", "1:1"] # [ "root" ]
+rxInterfaceName = "veth2"
+
+
 def runMeasurement(scheduler, marker, astfTemplates):
     global currentScheduler
     global currentMarker
     global connectionBeginCount
     global connectionBeginNotDetected
+    global connectionBegins
 
     print("Begin with scheduler: " + scheduler)
     currentScheduler = {
@@ -135,16 +137,17 @@ def runMeasurement(scheduler, marker, astfTemplates):
     }[scheduler]
     currentMarker = marker if marker else "none"
 
-    addQdiscCmd = ["tc", "qdisc", "add", "dev", "veth1", "parent", "1:1", scheduler]
+    addQdiscCmd = ["tc", "qdisc", "add", "dev", txInterfaceName] + txInterfaceQDiscClass + [scheduler]
     if scheduler == "bfifo":
         addQdiscCmd.extend(["limit", str(BFIFO_QUEUE_SIZE)])
     subprocess.run(addQdiscCmd, check=True)
-    #subprocess.run(["tc", "qdisc", "add", "dev", "veth1", "root", scheduler], check=True)
+    #subprocess.run(["tc", "qdisc", "add", "dev", whichInterfaceForScheduler, "root", scheduler], check=True)
 
     if marker:
-        subprocess.run(["tc", "filter", "add", "dev", "veth1", "egress", "bpf", "da", "obj", marker + ".o"], check=True)
+        subprocess.run(["tc", "filter", "add", "dev", txInterfaceName, "egress", "bpf", "da", "obj", marker + ".o"], check=True)
 
-    AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = "veth2", prn=handleSniffedPacket).start()
+    sniffer = AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = rxInterfaceName, prn=handleSniffedPacket)
+    sniffer.start()
 
     c = ASTFClient()
     c.connect()
@@ -155,6 +158,9 @@ def runMeasurement(scheduler, marker, astfTemplates):
     ))
 
     c.clear_stats()
+
+    begin = time.monotonic()
+
     c.start(mult = 1, duration = 10)
 
     while c.get_active_ports():
@@ -170,7 +176,7 @@ def runMeasurement(scheduler, marker, astfTemplates):
         print(connectionCountMsg)
 
         if scheduler != "bfifo":
-            subprocess.run(["tc", "qdisc", "show", "dev", "veth1"], check=True)
+            subprocess.run(["tc", "qdisc", "show", "dev", txInterfaceName], check=True)
             prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO", 
                             "rifo_debug": "RIFO", "pifo_debug": "PIFO", "sp_pifo_debug": "SP-PIFO"}[scheduler] + "] Statistics: "
             msg = findInDMesg(prefix)[len(prefix):]
@@ -208,7 +214,7 @@ def runMeasurement(scheduler, marker, astfTemplates):
         else:
             # natív qdisc
 
-            output = subprocess.check_output(["tc", "-s", "qdisc", "show", "dev", "veth1", "parent", "1:1"], text=True)
+            output = subprocess.check_output(["tc", "-s", "qdisc", "show", "dev", txInterfaceName] + txInterfaceQDiscClass, text=True)
             for line in output.splitlines():
                 match = re.search(r'backlog (\d+)b (\d+)p', line) # pl.: backlog 1514b 1p requeues 0
                 if match:
@@ -225,7 +231,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
     ipackets  = stats['total']['ipackets']
     opackets  = stats['total']['opackets']
 
-    print("Done with scheduler {0} - Packets Sent: {1}, Received: {2}".format(scheduler, opackets, ipackets))
+    print("Done with scheduler {0} in {1} seconds - Packets Sent: {2}, Received: {3}".
+          format(scheduler, time.monotonic() - begin, opackets, ipackets))
     #print(stats)
 
     ipacketsGauge.clear()
@@ -236,22 +243,25 @@ def runMeasurement(scheduler, marker, astfTemplates):
     packetDropCounter.clear()
     connectionBeginCount = 0
     connectionBeginNotDetected = 0
+    connectionBegins = {}
+    sniffer.stop()
+    sniffer.join()
 
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1"], check=True)
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass, check=True)
     if marker:
-        subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True)
-    #subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "root", scheduler], check=True)
+        subprocess.run(["tc", "filter", "del", "dev", txInterfaceName, "egress"], check=True)
+    #subprocess.run(["tc", "qdisc", "del", "dev", whichInterfaceForScheduler, "root", scheduler], check=True)
 
 def resetInterface():
     print("Removing leftover qdiscs")
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "bfifo"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pfifo_fast"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "rifo_debug"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "pifo_debug"])
-    subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1", "sp_pifo_debug"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["bfifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["pfifo_fast"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["rifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["pifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["sp_pifo"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["rifo_debug"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["pifo_debug"])
+    subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass + ["sp_pifo_debug"])
     print("Done removing leftover qdiscs")
-    print("Removing leftover qdiscs")
-    subprocess.run(["tc", "filter", "del", "dev", "veth1", "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
+    print("Removing leftover filters")
+    subprocess.run(["tc", "filter", "del", "dev", txInterfaceName, "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
