@@ -13,14 +13,20 @@ labelNames = ["scheduler", "marker"]
 throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", labelNames)
 ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", labelNames)
 opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", labelNames)
-flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", labelNames)
+flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", labelNames + ["destPort"])
 latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", labelNames)
 queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", labelNames)
 packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", labelNames + ["dropReason"])
+flowBeginCounter = Counter("vacak_connection_opens", "Megnyitott TCP kapcsolatok száma", labelNames + ["destPort"])
 
 start_http_server(18001)
 
-def makeProfile(port, flowSize, cps):
+ip_gen = ASTFIPGen(
+    dist_client=ASTFIPGenDist(ip_range=["2.2.2.2", "2.2.2.2"]),
+    dist_server=ASTFIPGenDist(ip_range=["1.1.1.1", "1.1.1.1"])
+)
+
+def makeASTFTemplate(port, flowSize, cps):
     # client program
     prog_c = ASTFProgram()
     prog_c.connect()
@@ -41,12 +47,7 @@ def makeProfile(port, flowSize, cps):
     # Receive from client
     prog_s.recv(flowSize)
 
-    ip_gen = ASTFIPGen(
-        dist_client=ASTFIPGenDist(ip_range=["2.2.2.2", "2.2.2.2"]),
-        dist_server=ASTFIPGenDist(ip_range=["1.1.1.1", "1.1.1.1"])
-    )
-
-    template = ASTFTemplate(
+    return ASTFTemplate(
         client_template=ASTFTCPClientTemplate(
             program = prog_c,
             port = port,
@@ -59,16 +60,19 @@ def makeProfile(port, flowSize, cps):
         )
     )
 
-    return ASTFProfile(
-        default_ip_gen = ip_gen,
-        templates = [template]
-    )
-
 global currentScheduler
 global currentMarker
+global connectionBeginCount
+global connectionBeginNotDetected
 
 connectionBegins = {}
+connectionBeginCount = 0
+connectionBeginNotDetected = 0
+
 def handleSniffedPacket(packet):
+    global connectionBeginCount
+    global connectionBeginNotDetected
+
     if packet[IP].src != "2.2.2.2":
         return
     #print(packet.summary())
@@ -76,17 +80,20 @@ def handleSniffedPacket(packet):
     connectionID = str(packet[TCP].sport) + "-" + str(packet[TCP].dport)
     match packet[TCP].flags:
         case "S":
-            print(str(now) + " Conn begin " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport))
+            #print(str(now) + " Conn begin " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport))
             connectionBegins[connectionID] = now
+            flowBeginCounter.labels(scheduler=currentScheduler, marker=currentMarker, destPort = str(packet[TCP].dport)).inc()
+            connectionBeginCount = connectionBeginCount + 1
         case "FA":
             if connectionID not in connectionBegins:
+                connectionBeginNotDetected = connectionBeginNotDetected + 1
                 print("Flow begin not detected: " + connectionID)
                 return
             beginTime = connectionBegins[connectionID]
             flowCompletionTime = now-beginTime
-            print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
-                  " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
-            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker).observe(flowCompletionTime)
+            #print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
+            #      " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
+            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker, destPort = str(packet[TCP].dport)).observe(flowCompletionTime)
         case _:
             raise Exception("unknown TCP flags: " + packet.summary())
 
@@ -114,9 +121,11 @@ def findInDMesg(prefix):
 
 BFIFO_QUEUE_SIZE=100000
 
-def runMeasurement(scheduler, marker, astfProfile):
+def runMeasurement(scheduler, marker, astfTemplates):
     global currentScheduler
     global currentMarker
+    global connectionBeginCount
+    global connectionBeginNotDetected
 
     print("Begin with scheduler: " + scheduler)
     currentScheduler = {
@@ -140,7 +149,10 @@ def runMeasurement(scheduler, marker, astfProfile):
     c = ASTFClient()
     c.connect()
     c.reset()
-    c.load_profile(astfProfile)
+    c.load_profile(ASTFProfile(
+        default_ip_gen = ip_gen,
+        templates = astfTemplates
+    ))
 
     c.clear_stats()
     c.start(mult = 1, duration = 10)
@@ -151,11 +163,18 @@ def runMeasurement(scheduler, marker, astfProfile):
         opacketsGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['total']['opackets'])
         throughputGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
 
+        connectionCountMsg = "Snooped connection begin count: " + str(connectionBeginCount) + "; not detected: " + str(connectionBeginNotDetected)
+        if "tcps_accepts" in stats["traffic"]["server"]:
+            connectionCountMsg = connectionCountMsg + "; TRex server TCP accepts: " + str(stats["traffic"]["server"]["tcps_accepts"])
+            connectionCountMsg = connectionCountMsg + "; TRex client TCP conn attempts: " + str(stats["traffic"]["client"]["tcps_connattempt"])
+        print(connectionCountMsg)
+
         if scheduler != "bfifo":
             subprocess.run(["tc", "qdisc", "show", "dev", "veth1"], check=True)
             prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO", 
                             "rifo_debug": "RIFO", "pifo_debug": "PIFO", "sp_pifo_debug": "SP-PIFO"}[scheduler] + "] Statistics: "
             msg = findInDMesg(prefix)[len(prefix):]
+            print(msg)
             for stat in msg.split(", "):
                 [statName, statVal] = stat.split(": ")
                 if statName == "latency": 
@@ -167,17 +186,25 @@ def runMeasurement(scheduler, marker, astfProfile):
                     statVal = float(statVal)
                 if statName == "latency":
                     statVal = statVal / 1000000 # ns -> ms
-                counter = {
-                    "latency": latencyGauge.labels(scheduler = currentScheduler, marker = currentMarker),
-                    "queue usage": queueUsage.labels(scheduler = currentScheduler, marker = currentMarker),
-                    "drop because full": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull"),
-                    "drop because priority too low": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "priorityTooLow"), 
-                    "drop old": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropOld"),
-                    "drop new": packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropNew"),
-                    "drop new because drop old was not enough": 
-                        packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropNewBecauseDropOldNotEnough"),
-                }[statName]
-                counter.set(statVal)
+                metric = None
+                match statName:
+                    case "latency":
+                        metric = latencyGauge.labels(scheduler = currentScheduler, marker = currentMarker)
+                    case "queue usage":
+                        metric = queueUsage.labels(scheduler = currentScheduler, marker = currentMarker)
+                    case "drop because full":
+                        metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull")
+                    case "drop because priority too low":
+                        metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "priorityTooLow")
+                    case "drop old":
+                        metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropOld")
+                    case "drop new":
+                        metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropNew")
+                    case "drop new because drop old was not enough":
+                        metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "dropNewBecauseDropOldNotEnough")
+                    case _:
+                        raise Exception("unknown stat name: " + str(statName))
+                metric.set(statVal)
         else:
             # natív qdisc
 
@@ -188,9 +215,9 @@ def runMeasurement(scheduler, marker, astfProfile):
                     queueUsage.labels(scheduler = currentScheduler, marker = currentMarker).set(float(match.group(1)) / float(BFIFO_QUEUE_SIZE))
                 match = re.search(r'dropped (\d+)', line) # pl.: Sent 410142438 bytes 273799 pkt (dropped 3243, overlimits 0 requeues 0)
                 if match:
-                    packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull").set(int(match.group(1)))
+                    packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull (" + currentScheduler + ")").set(int(match.group(1)))
 
-        time.sleep(0.01)
+        time.sleep(0.05)
 
     # végén m_tx_bw_l7_total_r-et lehetne kiírni stdoutra
 
@@ -207,6 +234,8 @@ def runMeasurement(scheduler, marker, astfProfile):
     flowCompletionTimeSummary.clear()
     latencyGauge.clear()
     packetDropCounter.clear()
+    connectionBeginCount = 0
+    connectionBeginNotDetected = 0
 
     subprocess.run(["tc", "qdisc", "del", "dev", "veth1", "parent", "1:1"], check=True)
     if marker:

@@ -35,12 +35,7 @@ inline int32_t get_dest_port(struct __sk_buff *skb)
 		if (((void *)iph) + ihl > data_end)
 			return -4;
 
-		if (iph->protocol == IPPROTO_TCP) {
-			struct tcphdr *tcp = (struct tcphdr *)(((void *)iph) + ihl);
-			if ((void *)(tcp + 1) > data_end)
-				return -5;
-			return bpf_htons(tcp->dest);
-		} else if(iph->protocol == IPPROTO_UDP) {
+		if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) { // ugyanott van a portszám UDP-ben mint TCP-ben
 			struct udphdr *udp = (struct udphdr *)(((void *)iph) + ihl);
 			if ((void *)(udp + 1) > data_end)
 				return -6;

@@ -7,15 +7,15 @@ from traffic_common import *
 resetInterface()
 
 #profile = makeProfile(50011, 10000000, 10)
-profile = makeProfile(50009, 1_000_000, 40)
+templates = [makeASTFTemplate(50009, 1_000_000, 40)]
 
-runMeasurement("bfifo", None, profile)
+runMeasurement("bfifo", None, templates)
 #runMeasurement("rifo", None) ezeket is lehet nézni, de ugyanaz lenne mint SJN-nek, mert csak egyetlen flow hossz van
 #runMeasurement("pifo", None)
 #runMeasurement("sp_pifo", None)
-runMeasurement("rifo", "sjn", profile)
-runMeasurement("pifo", "sjn", profile)
-runMeasurement("sp_pifo", "sjn", profile)
-runMeasurement("rifo", "srtf", profile)
-runMeasurement("pifo", "srtf", profile)
-runMeasurement("sp_pifo", "srtf", profile)
+runMeasurement("rifo", "sjn", templates)
+runMeasurement("pifo", "sjn", templates)
+runMeasurement("sp_pifo", "sjn", templates)
+runMeasurement("rifo", "srtf", templates)
+runMeasurement("pifo", "srtf", templates)
+runMeasurement("sp_pifo", "srtf", templates)

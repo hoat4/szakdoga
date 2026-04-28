@@ -1,6 +1,6 @@
 all: sjn.o srtf.o
 
-sjn.o: sjn.c
+sjn.o: sjn.c marker_common.h
 	clang -target bpf -g -O2 -c sjn.c -I/usr/include/x86_64-linux-gnu/
 
 sjn_load: sjn.o
@@ -8,7 +8,7 @@ sjn_load: sjn.o
 	tc qdisc add dev s1-eth2 clsact
 	tc filter add dev s1-eth2 ingress bpf da obj sjn.o
 
-srtf.o: srtf.c
+srtf.o: srtf.c marker_common.h
 	clang -target bpf -g -O2 -c srtf.c -I/usr/include/x86_64-linux-gnu/
 
 srtf_load: srtf.o
