@@ -13,11 +13,11 @@ labelNames = ["scheduler", "marker"]
 throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", labelNames)
 ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", labelNames)
 opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", labelNames)
-flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", labelNames + ["destPort"])
+flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", labelNames + ["flowSize"])
 latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", labelNames)
 queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", labelNames)
 packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", labelNames + ["dropReason"])
-flowBeginCounter = Counter("vacak_connection_opens", "Megnyitott TCP kapcsolatok száma", labelNames + ["destPort"])
+flowBeginCounter = Counter("vacak_connection_opens", "Megnyitott TCP kapcsolatok száma", labelNames + ["flowSize"])
 
 start_http_server(18001)
 
@@ -78,7 +78,7 @@ def handleSniffedPacket(packet):
         case "S":
             #print(str(now) + " Conn begin " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport))
             connectionBegins[connectionID] = now
-            flowBeginCounter.labels(scheduler=currentScheduler, marker=currentMarker, destPort = str(packet[TCP].dport)).inc()
+            flowBeginCounter.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSize(packet[TCP].dport)).inc()
             connectionBeginCount = connectionBeginCount + 1
         case "FA":
             if connectionID not in connectionBegins:
@@ -89,7 +89,7 @@ def handleSniffedPacket(packet):
             flowCompletionTime = now-beginTime
             #print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
             #      " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
-            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker, destPort = str(packet[TCP].dport)).observe(flowCompletionTime)
+            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSize(packet[TCP].dport)).observe(flowCompletionTime)
         case _:
             raise Exception("unknown TCP flags: " + packet.summary())
 
@@ -105,15 +105,21 @@ def findInDMesg(prefix):
     # tc qdisc showkor kétszer hívódik meg a qdisc dump, ezért
     # az utolsónál a latency ki lesz nullázódva
 
+    lastLine = ""
+
     foundOne = False
+    foundLastLine = False
     for line in reversed(process.stdout.splitlines()):
+        if not foundLastLine:
+            lastLine = line
+            foundLastLine = True
         if line.startswith(prefix):
             if foundOne:
                 return line
             else:
                 foundOne = True
       
-    raise Exception("no line found in dmesg starting with \"" + prefix + "\"")
+    raise Exception("no line found in dmesg starting with \"" + prefix + "\". Last line: " + lastLine)
 
 BFIFO_QUEUE_SIZE=100000
 
@@ -141,6 +147,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
     if scheduler == "bfifo":
         addQdiscCmd.extend(["limit", str(BFIFO_QUEUE_SIZE)])
     subprocess.run(addQdiscCmd, check=True)
+
+    print(str(addQdiscCmd))
     #subprocess.run(["tc", "qdisc", "add", "dev", whichInterfaceForScheduler, "root", scheduler], check=True)
 
     if marker:
@@ -180,6 +188,7 @@ def runMeasurement(scheduler, marker, astfTemplates):
             prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO", 
                             "rifo_debug": "RIFO", "pifo_debug": "PIFO", "sp_pifo_debug": "SP-PIFO"}[scheduler] + "] Statistics: "
             msg = findInDMesg(prefix)[len(prefix):]
+
             print(msg)
             for stat in msg.split(", "):
                 [statName, statVal] = stat.split(": ")
@@ -223,7 +232,7 @@ def runMeasurement(scheduler, marker, astfTemplates):
                 if match:
                     packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull (" + currentScheduler + ")").set(int(match.group(1)))
 
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     # végén m_tx_bw_l7_total_r-et lehetne kiírni stdoutra
 
@@ -265,3 +274,22 @@ def resetInterface():
     print("Done removing leftover qdiscs")
     print("Removing leftover filters")
     subprocess.run(["tc", "filter", "del", "dev", txInterfaceName, "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
+
+def destPortToFlowSize(destPort):
+    return {
+        50001: "100 B", 
+        50002: "500 B",
+        50003: "1 KB",
+        50004: "5 KB",
+        50005: "10 KB",
+        50006: "50 KB",
+        50007: "100 KB",
+        50008: "500 KB",
+        50009: "1 MB",
+        50010: "5 MB",
+        50011: "10 MB",
+        50012: "50 MB",
+        50013: "100 MB",
+        50014: "500 MB",
+        50015: "1 GB"
+    }[destPort]
