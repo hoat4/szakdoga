@@ -213,6 +213,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
                         metric = queueUsage.labels(scheduler = currentScheduler, marker = currentMarker)
                     case "drop because full":
                         metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "queueFull")
+                    case "drop because subqueue full":
+                        metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "subqueueFull")
                     case "drop because priority too low":
                         metric = packetDropCounter.labels(scheduler = currentScheduler, marker = currentMarker, dropReason = "priorityTooLow")
                     case "drop old":

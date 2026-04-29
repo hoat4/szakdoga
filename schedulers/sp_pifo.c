@@ -12,10 +12,19 @@
 #define QUEUE_COUNT 8
 
 #ifdef DEBUG
-#define SP_PIFO_QUEUE_LENGTH_BYTES 10000
+#define SP_PIFO_SUBQUEUE_LENGTH_BYTES 10000
 #else
-#define SP_PIFO_QUEUE_LENGTH_BYTES 100000
+#define SP_PIFO_SUBQUEUE_LENGTH_BYTES 50000
 #endif
+
+// Ez a queue hossz nem jó sehogy se. 
+// Ha 100k, akkor a queue telítettség lesz túl alacsony (megfogja a forgalmat
+// valami még azelőtt hogy elérne ehhez a qdischez) ezáltal nem annyira veszi
+// figyelembe a rankokat. 
+// Ha viszont 50k, akkor meg a flow completion time rontódik.
+
+// ez nincs használva sehol, csak reportolva a statban
+#define SP_PIFO_QUEUE_LENGTH_BYTES (SP_PIFO_SUBQUEUE_LENGTH_BYTES * QUEUE_COUNT)
 
 struct sp_pifo_sched_data {
 	struct Qdisc *sch;
@@ -26,7 +35,8 @@ struct sp_pifo_sched_data {
 
     u64 latency_sum;
     u64 latency_count;
-    u64 drop_because_queue_full;
+    u64 drop_because_full;
+    u64 drop_because_subqueue_full;
 };
 
 
@@ -76,13 +86,13 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 	struct sk_buff_head* qdisc = &q->queues[queueIndex];
 
-	if (sch->qstats.backlog + qdisc_pkt_len(skb) <= sch->limit) {
+	if (q->qstats[queueIndex].backlog + qdisc_pkt_len(skb) <= SP_PIFO_SUBQUEUE_LENGTH_BYTES) {
         if (nonIP) {
-            pr_debug("[SP-PIFO] Enqueue non-IP to queue #%d (used %d)", 
-                queueIndex, q->queues[queueIndex].qlen);
+            pr_debug("[SP-PIFO] Enqueue non-IP to queue #%d (used %d/%d bytes)", 
+                queueIndex, q->qstats[queueIndex].backlog, SP_PIFO_SUBQUEUE_LENGTH_BYTES);
         } else {
-	        pr_debug("[SP-PIFO] Enqueue rank %d to queue #%d (used %d)", 
-                rank, queueIndex, q->queues[queueIndex].qlen);
+	        pr_debug("[SP-PIFO] Enqueue rank %d to queue #%d (used %d/%d bytes)", 
+                rank, queueIndex, q->qstats[queueIndex].backlog, SP_PIFO_SUBQUEUE_LENGTH_BYTES);
         }
 
 		__skb_queue_tail(qdisc, skb);
@@ -98,13 +108,35 @@ static int sp_pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
         return NET_XMIT_SUCCESS;
 	}
 
-    q->drop_because_queue_full++;
-    if (nonIP) {
-        pr_debug("[SP-PIFO] Drop non-IP packet; used: %d, limit: %d", sch->q.qlen, sch->limit);
+    if (sch->qstats.backlog + qdisc_pkt_len(skb) <= sch->limit) {
+        // másik queue-ba még belefért volna.
+        // valójában nem biztos hogy befért volna, mert lehet hogy megoszlik az üres hely a sok queue-ban, 
+        // de nem okoz jelentős problémát, ha néha feleslegesen adunk NET_XMIT_SUCCESS-t droppolt packetre 
+        // NET_XMIT_DROP helyett.
+        
+        q->drop_because_subqueue_full++;
+        if (nonIP) {
+            pr_debug("[SP-PIFO] Drop non-IP packet because queue #%d is full; used: %d, limit: %d", 
+                queueIndex, sch->q.qlen, sch->limit);
+        } else {
+            pr_debug("[SP-PIFO] Drop with rank %d because queue #%d is full; used: %d, limit: %d", 
+                rank, queueIndex, sch->q.qlen, sch->limit);
+        }
+	    qdisc_drop(skb, sch, to_free);
+        return NET_XMIT_SUCCESS;
     } else {
-        pr_debug("[SP-PIFO] Drop with rank %d; used: %d, limit: %d", rank, sch->q.qlen, sch->limit);
+        // másik queue-ba se fért volna már bele.
+        
+        q->drop_because_full++;
+        if (nonIP) {
+            pr_debug("[SP-PIFO] Drop non-IP packet because all queues are full; used: %d, limit: %d", 
+                sch->q.qlen, sch->limit);
+        } else {
+            pr_debug("[SP-PIFO] Drop with rank %d because all queues are full; used: %d, limit: %d", 
+                rank, sch->q.qlen, sch->limit);
+        }
+	    return qdisc_drop(skb, sch, to_free);
     }
-	return qdisc_drop(skb, sch, to_free);
 }
 
 static struct sk_buff *sp_pifo_dequeue(struct Qdisc *sch)
@@ -194,7 +226,8 @@ static void sp_pifo_reset(struct Qdisc *sch)
 
 	memset(&q->qstats, 0, sizeof(q->qstats));
 
-    q->drop_because_queue_full = 0;
+    q->drop_because_full = 0;
+    q->drop_because_subqueue_full = 0;
     q->latency_sum = 0;
     q->latency_count = 0;
 }
@@ -204,11 +237,11 @@ static int sp_pifo_dump(struct Qdisc *sch, struct sk_buff *skb)
 {
     struct sp_pifo_sched_data *q = qdisc_priv(sch);
 
-    printk(KERN_INFO "[SP-PIFO] Statistics: latency: %llu / %llu = %llu, queue usage: %u / %u, drop because full: %llu", 
+    printk(KERN_INFO "[SP-PIFO] Statistics: latency: %llu / %llu = %llu, queue usage: %u / %u, drop because full: %llu, drop because subqueue full: %llu", 
         q->latency_sum, q->latency_count, 
         q->latency_sum / (q->latency_count == 0 ? 1 : q->latency_count), 
         sch->qstats.backlog, SP_PIFO_QUEUE_LENGTH_BYTES, 
-        q->drop_because_queue_full);
+        q->drop_because_full, q->drop_because_subqueue_full);
     q->latency_sum = 0;
     q->latency_count = 0;
 	return -1;
