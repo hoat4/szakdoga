@@ -20,6 +20,8 @@
 #define RIFO_UPDATE_INTERVAL 100
 #endif
 
+// 100K-nál nagyobbra nem érdemes tenni a queue-t, mert nem töltődik meg (legalábbis a htb-s tesztek során nem)
+
 struct rifo_params {
     /**
      * max queue length in bytes ("B")
@@ -109,9 +111,11 @@ static int rifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
             goto enqueue;
         } else {
-            pr_debug("[RIFO] rank %d drop because priority too low (range: %d - %d)", rank, q->vars.min, q->vars.max);
+            pr_debug("[RIFO] rank %d drop because priority too low (used %d, limit %d: current rank range: %d-%d)", rank, sch->qstats.backlog, q->params.limit, 
+                q->vars.min, q->vars.max);
             q->stats.drop_because_priority_too_low++;
-            return qdisc_drop(skb, sch, to_free);
+            qdisc_drop(skb, sch, to_free);
+            return NET_XMIT_SUCCESS;
         }
     }
 

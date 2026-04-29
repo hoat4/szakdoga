@@ -10,7 +10,8 @@ def floatRange(begin, end, divisions):
     return [begin + (end - begin) * x / divisions for x in range(1, divisions + 1)]
 
 labelNames = ["scheduler", "marker"]
-throughputGauge = Gauge('throughput', "áteresztőképesség L7-ben (bytes/s)", labelNames)
+throughputGauge = Gauge('throughput_l1', "áteresztőképesség (bps)", labelNames)
+throughputL7Gauge = Gauge('throughput_l7', "áteresztőképesség L7-ben (bps)", labelNames)
 ipacketsGauge = Gauge('packets_in', "bejövő csomagok", labelNames)
 opacketsGauge = Gauge('packets_out', "kimenő csomagok", labelNames)
 flowCompletionTimeSummary = Summary('flow_completion_time', "flow completion time (s)", labelNames + ["flowSize"])
@@ -18,6 +19,7 @@ latencyGauge = Gauge('queueing_delay', "Queue-ban töltött átlagos idő (ms)",
 queueUsage = Gauge('queue_occupancy', "Queue kihasználtsága (0-1)", labelNames)
 packetDropCounter = Gauge("packet_drop", "Droppolt packetek száma", labelNames + ["dropReason"])
 flowBeginCounter = Counter("connection_opens", "Megnyitott TCP kapcsolatok száma", labelNames + ["flowSize"])
+finishedFlowSizes = Counter("estimated_l7_throughput", "A flow bezárások alapcsán becsült áteresztőképesség", labelNames + ["flowSize"])
 
 start_http_server(18001)
 
@@ -78,7 +80,7 @@ def handleSniffedPacket(packet):
         case "S":
             #print(str(now) + " Conn begin " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport))
             connectionBegins[connectionID] = now
-            flowBeginCounter.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSize(packet[TCP].dport)).inc()
+            flowBeginCounter.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSizeStr(packet[TCP].dport)).inc()
             connectionBeginCount = connectionBeginCount + 1
         case "FA":
             if connectionID not in connectionBegins:
@@ -89,7 +91,8 @@ def handleSniffedPacket(packet):
             flowCompletionTime = now-beginTime
             #print(str(time.monotonic()) + " Conn end " + str(packet[TCP].sport) + " -> " + str(packet[TCP].dport)+
             #      " with scheduler "+ currentScheduler+" in " + str(flowCompletionTime) + " seconds")
-            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSize(packet[TCP].dport)).observe(flowCompletionTime)
+            flowCompletionTimeSummary.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSizeStr(packet[TCP].dport)).observe(flowCompletionTime)
+            finishedFlowSizes.labels(scheduler=currentScheduler, marker=currentMarker, flowSize = destPortToFlowSizeStr(packet[TCP].dport)).inc(destPortToFlowSize(packet[TCP].dport))
         case _:
             raise Exception("unknown TCP flags: " + packet.summary())
 
@@ -175,7 +178,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
         stats = c.get_stats()
         ipacketsGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['total']['ipackets'])
         opacketsGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['total']['opackets'])
-        throughputGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
+        throughputGauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats[0]['tx_bps_L1'])
+        throughputL7Gauge.labels(scheduler=currentScheduler, marker=currentMarker).set(stats['traffic']['server']['m_rx_bw_l7_r']) # vagy client.m_tx_bw_l7_r?
 
         connectionCountMsg = "Snooped connection begin count: " + str(connectionBeginCount) + "; not detected: " + str(connectionBeginNotDetected)
         if "tcps_accepts" in stats["traffic"]["server"]:
@@ -242,14 +246,17 @@ def runMeasurement(scheduler, marker, astfTemplates):
 
     print("Done with scheduler {0} in {1} seconds - Packets Sent: {2}, Received: {3}".
           format(scheduler, time.monotonic() - begin, opackets, ipackets))
-    #print(stats)
+    
+    print(stats)
 
     ipacketsGauge.clear()
     opacketsGauge.clear()
     throughputGauge.clear()
+    throughputL7Gauge.clear()
     flowCompletionTimeSummary.clear()
     latencyGauge.clear()
     packetDropCounter.clear()
+    finishedFlowSizes.clear()
     connectionBeginCount = 0
     connectionBeginNotDetected = 0
     connectionBegins = {}
@@ -260,6 +267,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
     if marker:
         subprocess.run(["tc", "filter", "del", "dev", txInterfaceName, "egress"], check=True)
     #subprocess.run(["tc", "qdisc", "del", "dev", whichInterfaceForScheduler, "root", scheduler], check=True)
+
+    time.sleep(1.5) # finishedFlowSizes grafikon részei kevésbé csússzanak össze
 
 def resetInterface():
     print("Removing leftover qdiscs")
@@ -276,6 +285,25 @@ def resetInterface():
     subprocess.run(["tc", "filter", "del", "dev", txInterfaceName, "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
 
 def destPortToFlowSize(destPort):
+    return {
+        50001: 100, 
+        50002: 500,
+        50003: 1000,
+        50004: 5000,
+        50005: 10_000,
+        50006: 50_000,
+        50007: 100_000,
+        50008: 500_000,
+        50009: 1_000_000,
+        50010: 5_000_000,
+        50011: 10_000_000,
+        50012: 50_000_000,
+        50013: 100_000_000,
+        50014: 500_000_000,
+        50015: 1_000_000_000
+    }[destPort]
+
+def destPortToFlowSizeStr(destPort):
     return {
         50001: "100 B", 
         50002: "500 B",
