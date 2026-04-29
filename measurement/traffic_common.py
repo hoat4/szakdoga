@@ -10,14 +10,14 @@ def floatRange(begin, end, divisions):
     return [begin + (end - begin) * x / divisions for x in range(1, divisions + 1)]
 
 labelNames = ["scheduler", "marker"]
-throughputGauge = Gauge('vacak_throughput', "áteresztőképesség L7-ben (bytes/s)", labelNames)
-ipacketsGauge = Gauge('vacak_packets_in', "bejövő csomagok", labelNames)
-opacketsGauge = Gauge('vacak_packets_out', "kimenő csomagok", labelNames)
-flowCompletionTimeSummary = Summary('vacak_flow_completion_time', "flow completion time (s)", labelNames + ["flowSize"])
-latencyGauge = Gauge('vacak_latency', "Queue-ban töltött átlagos idő (ms)", labelNames)
-queueUsage = Gauge('vacak_queue_usage', "Queue kihasználtsága (0-1)", labelNames)
-packetDropCounter = Gauge("vacak_packet_drop", "Droppolt packetek száma", labelNames + ["dropReason"])
-flowBeginCounter = Counter("vacak_connection_opens", "Megnyitott TCP kapcsolatok száma", labelNames + ["flowSize"])
+throughputGauge = Gauge('throughput', "áteresztőképesség L7-ben (bytes/s)", labelNames)
+ipacketsGauge = Gauge('packets_in', "bejövő csomagok", labelNames)
+opacketsGauge = Gauge('packets_out', "kimenő csomagok", labelNames)
+flowCompletionTimeSummary = Summary('flow_completion_time', "flow completion time (s)", labelNames + ["flowSize"])
+latencyGauge = Gauge('queueing_delay', "Queue-ban töltött átlagos idő (ms)", labelNames)
+queueUsage = Gauge('queue_occupancy', "Queue kihasználtsága (0-1)", labelNames)
+packetDropCounter = Gauge("packet_drop", "Droppolt packetek száma", labelNames + ["dropReason"])
+flowBeginCounter = Counter("connection_opens", "Megnyitott TCP kapcsolatok száma", labelNames + ["flowSize"])
 
 start_http_server(18001)
 
@@ -184,12 +184,12 @@ def runMeasurement(scheduler, marker, astfTemplates):
         print(connectionCountMsg)
 
         if scheduler != "bfifo":
-            subprocess.run(["tc", "qdisc", "show", "dev", txInterfaceName], check=True)
+            subprocess.run(["tc", "qdisc", "show", "dev", txInterfaceName], check=True, stdout=subprocess.PIPE)
             prefix = "[" + {"rifo": "RIFO", "pifo": "PIFO", "sp_pifo": "SP-PIFO", 
                             "rifo_debug": "RIFO", "pifo_debug": "PIFO", "sp_pifo_debug": "SP-PIFO"}[scheduler] + "] Statistics: "
             msg = findInDMesg(prefix)[len(prefix):]
 
-            print(msg)
+            #print(msg)
             for stat in msg.split(", "):
                 [statName, statVal] = stat.split(": ")
                 if statName == "latency": 
