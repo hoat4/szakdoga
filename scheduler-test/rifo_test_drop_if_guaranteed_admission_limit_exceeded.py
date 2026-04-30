@@ -11,5 +11,5 @@ print("Done")
 
 # a queue használtsága 1452/10000-ig ment fel.
 # mivel 1000 a guaranteed_admission_limit, azt kell látnunk, hogy amint
-# mint mint 1000 byte van a queueban, elkezdi eldobálni a nagyobb rangú packeteket, 
+# több mint 1000 byte van a queueban, elkezdi eldobálni a nagyobb rangú packeteket, 
 # de a kisebb rangúakat átengedi nagy queue hossz ellenére is.
