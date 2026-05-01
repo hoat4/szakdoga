@@ -1,4 +1,5 @@
-// https://github.com/ilbanshee/min-max-heap/blob/master/src/minmax_heap.c
+// Ennek a fájl tartalmának a többsége nem saját munka, hanem innen származik: 
+// https://github.com/ilbanshee/min-max-heap/blob/master/src/minmax_heap.c (2026 áprilisában letöltve)
 
 #include "depq.h"
 
