@@ -1,18 +1,11 @@
 from traffic_common import *
 
-resetInterface()
-
-templates1 = [
-    makeASTFTemplate(50009, 1_000_000, 10)
-]
-templates2 = [
-    makeASTFTemplate(50008, 500_000, 30),
-    makeASTFTemplate(50009, 1_000_000, 10)
+flows = [
+    FLOW_500KB * 30,
+    FLOW_1MB * 10
 ]
 
-runMeasurement("bfifo", None, templates2)
-runMeasurement("rifo", "sjn", templates2)
-
-#runMeasurement("rifo", "sjn", templates1)
-runMeasurement("pifo", "sjn", templates2)
-runMeasurement("sp_pifo", "sjn", templates2)
+runMeasurement("bfifo", None, flows)
+runMeasurement("rifo", "sjn", flows)
+runMeasurement("pifo", "sjn", flows)
+runMeasurement("sp_pifo", "sjn", flows)

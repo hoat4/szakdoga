@@ -6,18 +6,16 @@ from traffic_common import *
 
 # eredetileg 40*100KB volt, de úgy túl zavarosak voltak a flow completion time adatok
 
-resetInterface()
-
 #profile = makeProfile(50011, 10000000, 10)
-templates = [makeASTFTemplate(50010, 500_000, 8)]
+flows = [FLOW_5MB * 1]
 
-runMeasurement("bfifo", None, templates)
+#runMeasurement("bfifo", None, templates)
 #runMeasurement("rifo", None) ezeket is lehet nézni, de ugyanaz lenne mint SJN-nek, mert csak egyetlen flow hossz van
 #runMeasurement("pifo", None)
 #runMeasurement("sp_pifo", None)
-runMeasurement("rifo", "sjn", templates)
-runMeasurement("pifo", "sjn", templates)
-runMeasurement("sp_pifo", "sjn", templates)
-runMeasurement("rifo", "srtf", templates)
-runMeasurement("pifo", "srtf", templates)
-runMeasurement("sp_pifo", "srtf", templates)
+runMeasurement("rifo", "sjn", flows)
+#runMeasurement("pifo", "sjn", templates)
+#runMeasurement("sp_pifo", "sjn", templates)
+runMeasurement("rifo", "srtf", flows)
+runMeasurement("pifo", "srtf", flows)
+runMeasurement("sp_pifo", "srtf", flows)

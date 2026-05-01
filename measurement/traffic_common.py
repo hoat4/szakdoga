@@ -5,6 +5,7 @@ import subprocess
 import re
 from scapy.all import *
 from scapy.sendrecv import AsyncSniffer
+import os
 
 def floatRange(begin, end, divisions):
     return [begin + (end - begin) * x / divisions for x in range(1, divisions + 1)]
@@ -28,7 +29,9 @@ ip_gen = ASTFIPGen(
     dist_server=ASTFIPGenDist(ip_range=["1.1.1.1", "1.1.1.1"])
 )
 
-def makeASTFTemplate(port, flowSize, cps):
+def makeASTFTemplate(flowSizeObj, cps):
+    (port, flowSize) = (flowSizeObj.port, flowSizeObj.size)
+
     # client program
     prog_c = ASTFProgram()
     if flowSize <= 1_000_000:
@@ -130,6 +133,11 @@ txInterfaceName = "veth1"
 txInterfaceQDiscClass = ["parent", "1:1"] # [ "root" ]
 rxInterfaceName = "veth2"
 
+duration = 10
+
+def setDuration(seconds):
+    global duration
+    duration = seconds
 
 def runMeasurement(scheduler, marker, astfTemplates):
     global currentScheduler
@@ -155,7 +163,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
     #subprocess.run(["tc", "qdisc", "add", "dev", whichInterfaceForScheduler, "root", scheduler], check=True)
 
     if marker:
-        subprocess.run(["tc", "filter", "add", "dev", txInterfaceName, "egress", "bpf", "da", "obj", marker + ".o"], check=True)
+        markerObjFile = os.path.dirname(os.path.abspath(__file__)) + "/../markers/" + marker + ".o"
+        subprocess.run(["tc", "filter", "add", "dev", txInterfaceName, "egress", "bpf", "da", "obj", markerObjFile], check=True)
 
     sniffer = AsyncSniffer(filter = "tcp[tcpflags] & (tcp-syn|tcp-fin) > 0", iface = rxInterfaceName, prn=handleSniffedPacket)
     sniffer.start()
@@ -172,7 +181,7 @@ def runMeasurement(scheduler, marker, astfTemplates):
 
     begin = time.monotonic()
 
-    c.start(mult = 1, duration = 10)
+    c.start(mult = 1, duration = duration)
 
     while c.get_active_ports():
         stats = c.get_stats()
@@ -251,6 +260,8 @@ def runMeasurement(scheduler, marker, astfTemplates):
     
     print(stats)
 
+    sniffer.stop()
+    sniffer.join()
     ipacketsGauge.clear()
     opacketsGauge.clear()
     throughputGauge.clear()
@@ -262,8 +273,6 @@ def runMeasurement(scheduler, marker, astfTemplates):
     connectionBeginCount = 0
     connectionBeginNotDetected = 0
     connectionBegins = {}
-    sniffer.stop()
-    sniffer.join()
 
     subprocess.run(["tc", "qdisc", "del", "dev", txInterfaceName] + txInterfaceQDiscClass, check=True)
     if marker:
@@ -285,41 +294,40 @@ def resetInterface():
     print("Done removing leftover qdiscs")
     print("Removing leftover filters")
     subprocess.run(["tc", "filter", "del", "dev", txInterfaceName, "egress"], check=True) # ez nem dob hibát akkor se, ha nincs filter
+    print("Done removing leftover filters")
+
+FLOW_SIZES_BY_PORT = {}
+
+class FlowSize:
+    def __init__(self, port, size, displayableSize):
+        self.port = port
+        self.size = size
+        self.displayableSize = displayableSize
+        FLOW_SIZES_BY_PORT[port] = self
+
+    def __mul__(self, connectionsPerSecond):
+        return makeASTFTemplate(self, connectionsPerSecond)
+
+FLOW_100B =  FlowSize(50001, 100,           "100 B")
+FLOW_500B =  FlowSize(50002, 500,           "500 B")
+FLOW_1KB =   FlowSize(50003, 1_000,         "1 KB")
+FLOW_5KB =   FlowSize(50004, 5_000,         "5 KB")
+FLOW_10KB =  FlowSize(50005, 10_000,        "10 KB")
+FLOW_50KB =  FlowSize(50006, 50_000,        "50 KB")
+FLOW_100KB = FlowSize(50007, 100_000,       "100 KB")
+FLOW_500KB = FlowSize(50008, 500_000,       "500 KB")
+FLOW_1MB =   FlowSize(50009, 1_000_000,     "1 MB")
+FLOW_5MB =   FlowSize(50010, 5_000_000,     "5 MB")
+FLOW_10MB =  FlowSize(50011, 10_000_000,    "10 MB")
+FLOW_50MB =  FlowSize(50012, 50_000_000,    "50 MB")
+FLOW_100MB = FlowSize(50013, 100_000_000,   "100 MB")
+FLOW_500MB = FlowSize(50014, 500_000_000,   "500 MB")
+FLOW_1GB =   FlowSize(50015, 1_000_000_000, "1 GB")
 
 def destPortToFlowSize(destPort):
-    return {
-        50001: 100, 
-        50002: 500,
-        50003: 1000,
-        50004: 5000,
-        50005: 10_000,
-        50006: 50_000,
-        50007: 100_000,
-        50008: 500_000,
-        50009: 1_000_000,
-        50010: 5_000_000,
-        50011: 10_000_000,
-        50012: 50_000_000,
-        50013: 100_000_000,
-        50014: 500_000_000,
-        50015: 1_000_000_000
-    }[destPort]
+    return FLOW_SIZES_BY_PORT[destPort].size
 
 def destPortToFlowSizeStr(destPort):
-    return {
-        50001: "100 B", 
-        50002: "500 B",
-        50003: "1 KB",
-        50004: "5 KB",
-        50005: "10 KB",
-        50006: "50 KB",
-        50007: "100 KB",
-        50008: "500 KB",
-        50009: "1 MB",
-        50010: "5 MB",
-        50011: "10 MB",
-        50012: "50 MB",
-        50013: "100 MB",
-        50014: "500 MB",
-        50015: "1 GB"
-    }[destPort]
+    return FLOW_SIZES_BY_PORT[destPort].displayableSize
+
+resetInterface()
