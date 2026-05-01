@@ -46,7 +46,6 @@ static int sp_pifo_init(struct Qdisc *sch, struct nlattr *arg,
     struct sp_pifo_sched_data *q = qdisc_priv(sch);
     memset(q, 0, sizeof(struct sp_pifo_sched_data));
 
-    // TODO sch->limit az elvileg packet szám, nem byte szám
     sch->limit = SP_PIFO_QUEUE_LENGTH_BYTES;
     
 	for (int i = 0; i < QUEUE_COUNT; i++)
@@ -179,7 +178,8 @@ static struct sk_buff *sp_pifo_dequeue(struct Qdisc *sch)
     return NULL;
 }
 
-static struct sk_buff *sp_pifo_peek(struct Qdisc *sch) // TODO ez nincs tesztelve
+// TODO ez nincs tesztelve, de lehet hogy nem is hívódik meg a mérések során
+static struct sk_buff *sp_pifo_peek(struct Qdisc *sch)
 {
 	struct sp_pifo_sched_data *q = qdisc_priv(sch);
 

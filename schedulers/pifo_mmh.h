@@ -1,5 +1,5 @@
-#ifndef DEPQ_H_
-#define DEPQ_H_
+#ifndef PIFO_MMH_H_
+#define PIFO_MMH_H_
 
 #include <linux/types.h>
 
@@ -34,4 +34,4 @@ static inline int mmh_capacity(heap_t* h) {
     return h->size - 1;
 }
 
-#endif  // DEPQ_H_
+#endif  // PIFO_MMH_

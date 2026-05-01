@@ -10,7 +10,7 @@
 #include <net/pkt_cls.h>
 #include <linux/math64.h>
 #include <linux/types.h>
-#include "depq.h"
+#include "pifo_mmh.h"
 
 
 #define UINT32_MAX 4294967295
@@ -25,8 +25,7 @@ struct pifo_params {
     /**
      * max queue length in bytes ("B")
      */
-	u32 limit;			
-
+	u32 limit;
 };
 
 struct pifo_stats {
@@ -38,7 +37,7 @@ struct pifo_stats {
 };
 
 struct pifo_vars {
-    heap_t depq;
+    heap_t heap;
     u64 packetCounter; // ld. skb_and_rank.order
 };
 
@@ -59,12 +58,11 @@ static int pifo_init(struct Qdisc *sch, struct nlattr *arg,
 
     int max_packets = q->params.limit / 28;
 
-    q->vars.depq.data = vmalloc((max_packets+1) * sizeof(struct sk_buff*));
-    q->vars.depq.count = 0;
-    q->vars.depq.size = max_packets+1;
+    q->vars.heap.data = vmalloc((max_packets+1) * sizeof(struct sk_buff*));
+    q->vars.heap.count = 0;
+    q->vars.heap.size = max_packets+1;
     q->vars.packetCounter = 0;
-    pr_debug("vmalloc result %p", q->vars.depq.data);
-
+    
     return 0;
 }
 
@@ -74,7 +72,6 @@ void compute_rank(struct sk_buff* skb, bool* non_ip, u32* rank) {
     *non_ip = true;
 	if (skb_protocol(skb, true) == htons(ETH_P_IP)) {
 	    const struct iphdr *iph = ip_hdr(skb);
-        //pr_warn("protocol: %d", iph->protocol);
     	if(iph != NULL) {
             *rank = ntohs(iph->id);
             *non_ip = false;
@@ -89,7 +86,7 @@ bool try_enqueue(struct Qdisc *sch, struct pifo_sched_data *q, skb_and_rank s);
 
 bool try_enqueue(struct Qdisc *sch, struct pifo_sched_data *q, skb_and_rank s) {
     if (sch->qstats.backlog + qdisc_pkt_len(s.skb) <= q->params.limit &&
-            mmh_insert(&q->vars.depq, s)) {
+            mmh_insert(&q->vars.heap, s)) {
         sch->qstats.backlog += qdisc_pkt_len(s.skb);
         sch->q.qlen++; // sch_htb enélkül nem megy
         // sch_api.c-ben írják is:
@@ -98,10 +95,10 @@ bool try_enqueue(struct Qdisc *sch, struct pifo_sched_data *q, skb_and_rank s) {
 
         if (s.non_ip) {
             pr_debug("[PIFO] Enqueued non-IP (used bytes: %d/%d, used packets: %d/%d)", 
-                sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+                sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
         } else {
 	        pr_debug("[PIFO] Enqueued rank %d (used bytes: %d/%d, used packets: %d/%d)", 
-                s.rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+                s.rank, sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
         }
 
         if (s.skb->tstamp == 0)
@@ -132,7 +129,7 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
         .order = q->vars.packetCounter++
     };
     
-    //pr_debug("push %p, %p", q->vars.depq.data, s);
+    //pr_debug("push %p, %p", q->vars.heap.data, s);
     if (try_enqueue(sch, q, s)) {
         return NET_XMIT_SUCCESS;
     } 
@@ -143,30 +140,30 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
     // pop+push költséges művelet, ezért ha megegyezik a kettőnek a rankja,
     // inkább bennhagyjuk a régit
-    if (mmh_peek_max(&q->vars.depq, &sOld) && less_than(s, sOld)) {
+    if (mmh_peek_max(&q->vars.heap, &sOld) && less_than(s, sOld)) {
         // drop old
 
         if (nonIP) {
             if (sOld.non_ip) {
                 pr_debug("[PIFO] Drop old non-IP packet to make space for non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
-                    sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+                    sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
             } else {
                 pr_debug("[PIFO] Drop old packet with rank %d to make space for non-IP packet (used bytes: %d/%d, used packets: %d/%d)", 
                     sOld.rank,
-                    sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+                    sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
             }
         } else {
             if (sOld.non_ip) {
                 pr_debug("[PIFO] Drop old non-IP packet to make space for packet with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
-                    rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+                    rank, sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
             } else {
                 pr_debug("[PIFO] Drop old packet with rank %d to make space for packet with rank %d (used bytes: %d/%d, used packets: %d/%d)", 
                     sOld.rank,
-                    rank, sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+                    rank, sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
             }
         }
 
-        if (!mmh_pop_max(&q->vars.depq, &sOld))
+        if (!mmh_pop_max(&q->vars.heap, &sOld))
             panic("[PIFO] drop old failed");
         sch->q.qlen--; // sch_htb enélkül nem megy
         sch->qstats.backlog -= qdisc_pkt_len(sOld.skb);
@@ -190,12 +187,12 @@ static int pifo_enqueue(struct sk_buff *skb, struct Qdisc *sch,
     if (nonIP) {
         pr_debug("[PIFO] Drop new non-IP packet %s(used bytes: %d/%d, used packets: %d/%d)", 
             dropOldWasNotEnough ? "because dropping old was not enough " : "",
-            sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+            sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
     } else {
         pr_debug("[PIFO] Drop new with rank %d %s(used bytes: %d/%d, used packets: %d/%d)", 
             rank, 
             dropOldWasNotEnough ? "because dropping old was not enough " : "",
-            sch->qstats.backlog, q->params.limit, q->vars.depq.count, mmh_capacity(&q->vars.depq));
+            sch->qstats.backlog, q->params.limit, q->vars.heap.count, mmh_capacity(&q->vars.heap));
     }
 
     return qdisc_drop(skb, sch, to_free);
@@ -208,12 +205,12 @@ static struct sk_buff *pifo_dequeue(struct Qdisc *sch)
 
 	struct pifo_sched_data *q = qdisc_priv(sch);
 
-    if (q->vars.depq.count != sch->q.qlen)
-        printk(KERN_ERR "q->vars.depq.count != sch->q.qlen: %d vs %d", q->vars.depq.count, sch->q.qlen);
+    if (q->vars.heap.count != sch->q.qlen)
+        printk(KERN_ERR "q->vars.heap.count != sch->q.qlen: %d vs %d", q->vars.heap.count, sch->q.qlen);
 
     skb_and_rank s;
-    if (mmh_pop_min(&q->vars.depq, &s)) {
-        //pr_debug("deq success (%d elements)", q->vars.depq.count);
+    if (mmh_pop_min(&q->vars.heap, &s)) {
+        //pr_debug("deq success (%d elements)", q->vars.heap.count);
         struct sk_buff* skb = s.skb;
         //pr_debug("deq result %p, rank %d", skb, s->rank);
         sch->q.qlen--;
@@ -248,7 +245,7 @@ static struct sk_buff *pifo_peek(struct Qdisc *sch)
 {
 	struct pifo_sched_data *q = qdisc_priv(sch);
     skb_and_rank s;
-    if (mmh_peek_min(&q->vars.depq, &s)) {
+    if (mmh_peek_min(&q->vars.heap, &s)) {
         pr_debug("peek succ");
         return s.skb;
     } else {
@@ -260,16 +257,16 @@ static struct sk_buff *pifo_peek(struct Qdisc *sch)
 static void pifo_reset(struct Qdisc *sch)
 {
 	struct pifo_sched_data *q = qdisc_priv(sch);
-    pr_debug("[PIFO] Free %d items from minheap", q->vars.depq.count);
-    if (q->vars.depq.count != sch->q.qlen)
-        printk(KERN_ERR "q->vars.depq.count != sch->q.qlen: %d vs %d", q->vars.depq.count, sch->q.qlen);
-    if (q->vars.depq.count > 0) {
-        skb_and_rank* arr = q->vars.depq.data;
-        for (int i = 1; i <= q->vars.depq.count - 1; i++) {
+    pr_debug("[PIFO] Free %d items from minheap", q->vars.heap.count);
+    if (q->vars.heap.count != sch->q.qlen)
+        printk(KERN_ERR "q->vars.heap.count != sch->q.qlen: %d vs %d", q->vars.heap.count, sch->q.qlen);
+    if (q->vars.heap.count > 0) {
+        skb_and_rank* arr = q->vars.heap.data;
+        for (int i = 1; i <= q->vars.heap.count - 1; i++) {
             arr[i].skb->next = arr[i + 1].skb;
         }
-        rtnl_kfree_skbs(arr[1].skb, arr[q->vars.depq.count].skb);
-        q->vars.depq.count = 0;
+        rtnl_kfree_skbs(arr[1].skb, arr[q->vars.heap.count].skb);
+        q->vars.heap.count = 0;
         sch->q.qlen = 0;
     }
     sch->qstats.backlog = 0;
@@ -289,11 +286,9 @@ static void pifo_destroy(struct Qdisc *sch)
     pifo_reset(sch);
 
     struct pifo_sched_data *q = qdisc_priv(sch);
-    vfree(q->vars.depq.data);
+    vfree(q->vars.heap.data);
     pr_debug("[PIFO] destroy done");
 }
-
-
 
 
 static int pifo_dump(struct Qdisc *sch, struct sk_buff *skb)

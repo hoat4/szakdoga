@@ -7,11 +7,11 @@ CC += ${CFLAGS}
 ifeq ($(VARIANT),DEBUG)
 	obj-m += rifo_debug.o sp_pifo_debug.o pifo_debug.o
 	rifo_debug-objs := rifo.o
-	pifo_debug-objs := pifo_main.o depq.o
+	pifo_debug-objs := pifo_main.o pifo_mmh.o
 	sp_pifo_debug-objs := sp_pifo.o
 else
 	obj-m += rifo.o sp_pifo.o pifo.o
-	pifo-objs := pifo_main.o depq.o
+	pifo-objs := pifo_main.o pifo_mmh.o
 endif
 
 all: release debug

@@ -8,8 +8,6 @@ flows = [
 
 #setDuration(20)
 
-runMeasurement("rifo", "srtf", flows)
-
 runMeasurement("bfifo", None, flows)
 #runMeasurement("rifo", None, flows)
 runMeasurement("pifo", "sjn", flows)

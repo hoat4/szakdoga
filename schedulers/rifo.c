@@ -65,7 +65,6 @@ static int rifo_init(struct Qdisc *sch, struct nlattr *arg,
 {
     struct rifo_sched_data *q = qdisc_priv(sch);
     memset(q, 0, sizeof(struct rifo_sched_data));
-    // TODO sch->limit az elvileg packet szám, nem byte szám
     sch->limit = q->params.limit = RIFO_QUEUE_LENGTH;
     q->sch = sch;
     q->params.guaranteed_admission_limit = q->params.limit / 10;

@@ -14,12 +14,14 @@ struct flow_id {
 };
 
 struct flow_data {
-    bool is_tcp;
+    // ez valójában flow_id-be kéne, de úgyse próbálunk 
+    // egyszerre UDP és TCP forgalmat, ezért jó lesz itt is
+    bool is_tcp; 
 
-    // UDP:
+    // ez csak UDP esetén van használva:
     __u32 sent_bytes;
 
-    // TCP:
+    // ez csak TCP esetén van használva:
     __u32 initial_sequence_number;
 };
 
@@ -43,19 +45,18 @@ int marker_func(struct __sk_buff *skb)
         void *data_end = (void *)(long)skb->data_end;
 
         if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end) {
-            bpf_printk("no full IP packet header (1)");
+            bpf_printk("[SRTF] no full IP packet header (1)");
             return TC_ACT_OK;
         }
 
         if (iph->protocol == IPPROTO_TCP) {
             uint32_t ihl_in_bytes = iph->ihl * 4;
             if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + ihl_in_bytes + sizeof(struct tcphdr)) < 0) {
-                bpf_printk("failed to pull TCP header");
+                bpf_printk("[SRTF] failed to pull TCP header");
                 return TC_ACT_OK;
             }
         }
 
-        //bpf_printk("dstport %d\n", get_dest_port(skb));
         int32_t flow_length = get_flow_length(skb);
         __u16 rank = 0;
         if (flow_length != -1) {
@@ -65,7 +66,7 @@ int marker_func(struct __sk_buff *skb)
             data_end = (void *)(long)skb->data_end;
 
             if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end) {
-                bpf_printk("no full IP packet header (2)");
+                bpf_printk("[SRTF] No full IP packet header (2)");
                 return TC_ACT_OK;
             }
 
@@ -75,7 +76,7 @@ int marker_func(struct __sk_buff *skb)
 
             if ((void*) (&tcph->dest + 1) > data_end || 
                 (void*) (&tcph->source + 1) > data_end) {
-                bpf_printk("hiba1");
+                bpf_printk("[SRTF] Packet corrupted, length too small");
                 return TC_ACT_OK;
             }
         
@@ -98,7 +99,7 @@ int marker_func(struct __sk_buff *skb)
                     payloadLen = bpf_htons(iph->tot_len) - sizeof(struct iphdr) - sizeof(struct udphdr);
                     break;
                 default:
-                    bpf_printk("hiba4");
+                    bpf_printk("[SRTF] Unknown protocol, leaving packet as is");
                     return TC_ACT_OK;
             }
 
@@ -131,7 +132,7 @@ int marker_func(struct __sk_buff *skb)
                 if (!flowData) {
                     // ez akkor lehet, ha kikerült a hashmapből az update és lookup hívás között, 
                     // de ahhoz rengeteg új packet párhuzamos feldolgozása kéne, ezért ez lehetetlen
-                    bpf_printk("hiba2");
+                    bpf_printk("[SRTF] Error: can't find flow in hashtable");
                     return TC_ACT_OK;
                 }
             }
@@ -139,18 +140,13 @@ int marker_func(struct __sk_buff *skb)
             int32_t sent_bytes;
 
             if (flowData->is_tcp) {
-		        //bpf_printk("flow is tcp");
                 if (iph->protocol == IPPROTO_TCP && (void*) (&tcph->window /* doff */) <= data_end) {
                     // ez így nem pontos, mert pl. a SYN is asszem 1-gyel növeli a sequence numbert, de nem baj ha csak kicsit pontatlan
                     sent_bytes = bpf_ntohl(tcph->seq) - flowData->initial_sequence_number;
-    		        //bpf_printk("seq is %d", tcph->seq);
-    		        //bpf_printk("sent_bytes %d", sent_bytes);
                 } else {
                     sent_bytes = 0;
-                    //bpf_printk("was TCP but currently not");
                 }
             } else {
-		        //bpf_printk("flow is udp");
                 sent_bytes = (int32_t) flowData->sent_bytes;
             }
 
@@ -171,8 +167,6 @@ int marker_func(struct __sk_buff *skb)
             if (!flowData->is_tcp)
                 __sync_fetch_and_add(&flowData->sent_bytes, payloadLen);
         }
-        
-		//bpf_printk("rank: %d", rank);
 
         set_rank(skb, rank);
     }

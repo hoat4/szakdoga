@@ -10,4 +10,6 @@ subprocess.run(["tc", "class", "add", "dev", "veth1", "parent", "1:", "classid",
 
 subprocess.run("tc qdisc add dev veth1 clsact".split(), check=True)
 
-#subprocess.run(["ip", "link", "del", "veth1"], check=True)
+# így lehet visszacsinálni a fentieket: 
+#  ip link del veth1
+

@@ -1,7 +1,12 @@
-// Ennek a fájl tartalmának a többsége nem saját munka, hanem innen származik: 
+// Ennek a fájl tartalmának a nagy része nem saját munka, hanem innen származik: 
 // https://github.com/ilbanshee/min-max-heap/blob/master/src/minmax_heap.c (2026 áprilisában letöltve)
 
-#include "depq.h"
+/**
+ * Min-max heap implementáció, átírva int típusú elemek 
+ * tárolásáról skb_and_rank típusú elemek tárolására 
+ */
+
+#include "pifo_mmh.h"
 
 #define is_min(n) ((log2_32(n) & 1) == 0)
 #define parent(n) (n / 2)
