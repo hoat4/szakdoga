@@ -2,8 +2,7 @@
 // https://github.com/ilbanshee/min-max-heap/blob/master/src/minmax_heap.c (2026 áprilisában letöltve)
 
 /**
- * Min-max heap implementáció, átírva int típusú elemek 
- * tárolásáról skb_and_rank típusú elemek tárolására 
+ * Min-max heap, ami skb_and_rank típusú elemeket tárol.
  */
 
 #include "pifo_mmh.h"
